@@ -412,11 +412,12 @@ batch_size = 100
     # nn.Linear(64 * 49, 10),
 # ).cuda()
 model = nn.Sequential(
-    MetaResNet([[64, 2], [128, 2], [128, 4]], 1, 5, norm_scale=0.1816, image_sizes=[28, 28], dropout=False),
+    # MetaResNet([[64, 2], [128, 2], [128, 4]], 1, 5, norm_scale=0.1816, image_sizes=[28, 28], dropout=False),
+    MetaResNet([[32, 2], [64, 2], [64, 4]], 1, 5, norm_scale=0.1816, image_sizes=[28, 28], dropout=False),
     # ResBatchNorm2d(512),
     # nn.Conv2d(512, 10, 2),
     nn.Flatten(1),
-    nn.Linear(128 * 3 * 3, 10),
+    nn.Linear(64 * 3 * 3, 10),
 ).cuda()
 # model = AutoEncoder(128, 128, 128).cuda()
 optimizer = torch.optim.Adam(model.parameters())

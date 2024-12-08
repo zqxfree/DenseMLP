@@ -121,7 +121,7 @@ class ResLayerNorm2d(nn.Module):
 
 
 class ResConv2d(nn.Module):
-    def __init__(self, image_size, in_channels, out_channels, kernels=3, conv_momentum=None, num_heads=1, batch_norm=True, xor=False):
+    def __init__(self, image_size, in_channels, out_channels, kernels=3, conv_momentum=None, num_heads=1, batch_norm=True, xor=True):
         super(ResConv2d, self).__init__()
         if in_channels != out_channels:
             self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
@@ -161,9 +161,9 @@ class ResConv2d(nn.Module):
         # y4 = self.conv4(x)
         x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
         if self.batch_norm:
-            y = self.bn(y1) + self.bn1(y2) * self.bn2(y3) # if self.xor else x + self.bn1(y2) * self.bn2(y3) # + self.bn(y1) #
+            y = self.bn(y1) + self.bn1(y2) * self.bn2(y3) if self.xor else self.bn(y1) #
         else:
-            y = self.ln(y1) + self.ln1(y2) * self.ln2(y3) # if self.xor else x + self.ln1(y2) * self.ln2(y3)  # + self.ln(y1) #
+            y = self.ln(y1) + self.ln1(y2) * self.ln2(y3) if self.xor else self.ln(y1) #
         if self.multi_head_downsampling is not None:
             h, w = y.shape[-2:]
             y = self.multi_head_downsampling(y).unflatten(1, (-1,) + self.num_heads)
@@ -341,9 +341,12 @@ class MetaResConv2d(nn.Module):
         #     ResReLU(relu_neg_momentum, reverse=False)
         # )
         self.layer1 = nn.Sequential(
-            # ResBatchNorm2d(in_channels, norm_scale, short_cut=True),
-            ResLayerNorm2d(image_size, norm_scale, bias=False, short_cut=True),
-            ResConv2d(image_size, in_channels, out_channels, kernel_size, conv_momentum, batch_norm=False, xor=False),
+            ResBatchNorm2d(in_channels, norm_scale, bias=False, short_cut=True),
+            # ResLayerNorm2d(image_size, norm_scale, bias=False, short_cut=True),
+            ResConv2d(image_size, in_channels, out_channels, kernel_size, conv_momentum, num_heads=2, batch_norm=True, xor=True),
+            ResBatchNorm2d(out_channels, norm_scale, bias=False, short_cut=True),
+            ResConv2d(image_size, out_channels, out_channels, kernel_size, conv_momentum, num_heads=1, batch_norm=True,
+                      xor=False),
             ResReLU(relu_neg_momentum, reverse=False),
             # ResBatchNorm2d(out_channels, norm_scale, short_cut=True),
             # # ResLayerNorm2d(image_size, norm_scale, bias=False, short_cut=True),
@@ -354,10 +357,13 @@ class MetaResConv2d(nn.Module):
             # ResLayerNorm2d(image_size, norm_scale, bias=False, short_cut=True),
             # ResConv2d(image_size, in_channels, out_channels, kernel_size, conv_momentum, batch_norm=False),
             # ResReLU(relu_neg_momentum, reverse=True)
-            # ResBatchNorm2d(in_channels, norm_scale, short_cut=True),
-            ResLayerNorm2d(image_size, norm_scale, bias=False, short_cut=True),
-            AttnConv2d(image_size, in_channels, out_channels, kernel_size, kernel_size, conv_momentum,
-                       batch_norm=False),
+            ResBatchNorm2d(in_channels, norm_scale, bias=False, short_cut=True),
+            # ResLayerNorm2d(image_size, norm_scale, bias=False, short_cut=True),
+            AttnConv2d(image_size, in_channels, out_channels, kernel_size, kernel_size, conv_momentum, num_heads=2,
+                       batch_norm=True),
+            ResBatchNorm2d(out_channels, norm_scale, bias=False, short_cut=True),
+            ResConv2d(image_size, out_channels, out_channels, kernel_size, conv_momentum, num_heads=1, batch_norm=True,
+                      xor=False),
             ResReLU(relu_neg_momentum, reverse=True),
             # ResBatchNorm2d(out_channels, norm_scale, short_cut=True),
             # # ResLayerNorm2d(image_size, norm_scale, bias=False, short_cut=True),
