@@ -148,7 +148,7 @@ class ResConv2d(nn.Module):
         if self.num_heads[0] * self.num_heads[1] == 1:
             self.multi_head_downsampling = None
         else:
-            self.multi_head_downsampling = nn.MaxPool2d(self.num_heads)
+            self.multi_head_downsampling = nn.AvgPool2d(self.num_heads)
         # self.conv.weight.data /= 10
 
     def forward(self, x):
@@ -203,7 +203,7 @@ class AttnConv2d(nn.Module):
         if self.num_heads[0] * self.num_heads[1] == 1:
             self.multi_head_downsampling = None
         else:
-            self.multi_head_downsampling = nn.MaxPool2d(self.num_heads)
+            self.multi_head_downsampling = nn.AvgPool2d(self.num_heads)
 
     def forward(self, x):
         y1 = self.unfold1(self.conv1(x))
