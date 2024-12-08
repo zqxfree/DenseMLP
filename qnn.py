@@ -346,7 +346,7 @@ class MetaResConv2d(nn.Module):
             ResConv2d(image_size, in_channels, out_channels, kernel_size, conv_momentum, num_heads=2, batch_norm=True, xor=True),
             ResBatchNorm2d(out_channels, norm_scale, bias=False, short_cut=True),
             ResConv2d(image_size, out_channels, out_channels, kernel_size, conv_momentum, num_heads=1, batch_norm=True,
-                      xor=False),
+                      xor=True),
             ResReLU(relu_neg_momentum, reverse=False),
             # ResBatchNorm2d(out_channels, norm_scale, short_cut=True),
             # # ResLayerNorm2d(image_size, norm_scale, bias=False, short_cut=True),
