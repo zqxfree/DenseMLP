@@ -4,6 +4,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def softxor(x, y, eps=1e-3):
+    y = x.tanh() * y.tanh()
+    return 0.5 * torch.log((1 + eps + y) / (1 + eps - y))
+
+
+def quadratic_softxor(x, y, eps=1e-5):
+    x /= (1 + x ** 2).sqrt()
+    y /= (1 + y ** 2).sqrt()
+    y *= x
+    return y / (1 + eps - y ** 2).sqrt()
+
+
 class Flipout(nn.Module):
     def __init__(self, p=0.25):
         super(Flipout, self).__init__()
@@ -132,13 +144,13 @@ class ResConv2d(nn.Module):
         else:
             self.num_heads = (num_heads, num_heads)
         # self.alpha = nn.Parameter(torch.tensor(0.))
-        self.conv1 = nn.Conv2d(in_channels, out_channels * self.num_heads[0] * self.num_heads[1], kernels, padding=kernels // 2, bias=False)
-        self.conv2 = nn.Conv2d(in_channels, out_channels * self.num_heads[0] * self.num_heads[1], kernels, padding=kernels // 2, bias=False)
-        self.conv3 = nn.Conv2d(in_channels, out_channels * self.num_heads[0] * self.num_heads[1], kernels, padding=kernels // 2, bias=False)
-        self.conv4 = nn.Conv2d(in_channels, out_channels * self.num_heads[0] * self.num_heads[1], kernels, padding=kernels // 2, bias=False)
-        self.bn = ResBatchNorm2d(out_channels * self.num_heads[0] * self.num_heads[1], 0.1816, short_cut=False)
-        self.bn1 = ResBatchNorm2d(out_channels * self.num_heads[0] * self.num_heads[1], 0.1816, short_cut=False)
-        self.bn2 = ResBatchNorm2d(out_channels * self.num_heads[0] * self.num_heads[1], 0.1816, short_cut=False)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.conv2 = nn.Conv2d(in_channels // 2 if in_channels >= 10 else in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.conv3 = nn.Conv2d(in_channels // 2 if in_channels >= 10 else in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.conv4 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.bn = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
+        self.bn1 = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
+        self.bn2 = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
         self.ln = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
         self.ln1 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
         self.ln2 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
@@ -148,7 +160,7 @@ class ResConv2d(nn.Module):
         if self.num_heads[0] * self.num_heads[1] == 1:
             self.multi_head_downsampling = None
         else:
-            self.multi_head_downsampling = nn.AvgPool2d(self.num_heads)
+            self.multi_head_downsampling = nn.Unfold(self.num_heads, stride=self.num_heads) # nn.AvgPool2d(self.num_heads)
         # self.conv.weight.data /= 10
 
     def forward(self, x):
@@ -156,17 +168,33 @@ class ResConv2d(nn.Module):
         # if self.dropout is not None:
         #     y = self.dropout(y)
         y1 = self.conv1(x)
-        y2 = self.conv2(x)
-        y3 = self.conv3(x)
+        if x.size(1) >= 10:
+            x1, x2 = x.chunk(2, 1)
+            y2 = self.conv2(x1)
+            y3 = self.conv3(x1)
+        else:
+            y2 = self.conv2(x)
+            y3 = self.conv3(x)
         # y4 = self.conv4(x)
         x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
         if self.batch_norm:
-            y = self.bn(y1) + self.bn1(y2) * self.bn2(y3) if self.xor else self.bn(y1) #
+            y = self.bn(y1) + self.bn1(y2) * self.bn2(y3) if self.xor else self.bn(y1) # softxor(self.bn1(y2), self.bn2(y3))
         else:
-            y = self.ln(y1) + self.ln1(y2) * self.ln2(y3) if self.xor else self.ln(y1) #
+            y = self.ln(y1) + self.ln1(y2) * self.ln2(y3) if self.xor else self.ln(y1) # softxor(self.ln1(y2), self.ln2(y3))
+        # print(x.shape, y.shape, self.num_heads)
         if self.multi_head_downsampling is not None:
             h, w = y.shape[-2:]
-            y = self.multi_head_downsampling(y).unflatten(1, (-1,) + self.num_heads)
+            y = self.multi_head_downsampling(y)
+            # print(y.shape)
+            y = y.unflatten(1, (-1, self.num_heads[0] * self.num_heads[1], self.num_heads[0] * self.num_heads[1]))
+            # print(y.shape)
+            y = y.transpose(2, 3).contiguous()
+            # print(y.shape)
+            y = y.view((y.size(0), -1) + self.num_heads + (int(sqrt(y.size(-1))), int(sqrt(y.size(-1)))))
+            # print(y.shape)
+        # if self.multi_head_downsampling is not None:
+        #     h, w = y.shape[-2:]
+        #     y = self.multi_head_downsampling(y).unflatten(1, (-1,) + self.num_heads)
             y = y.transpose(3, 4).contiguous()
             y = y.view(y.shape[:2] + (y.shape[2] * y.shape[3], -1))
             if y.size(2) * y.size(3) < h * w:
@@ -189,7 +217,8 @@ class AttnConv2d(nn.Module):
         else:
             self.num_heads = (num_heads, num_heads)
         self.conv1 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
-        self.conv2 = nn.Conv2d(in_channels, out_channels * self.num_heads[0] * self.num_heads[1], kernels, padding=kernels // 2, bias=False)
+        self.conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.conv3 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
         self.unfold1 = nn.Unfold(attn_kernels, stride=attn_kernels)
         self.unfold2 = nn.Unfold(attn_kernels, stride=attn_kernels)
         self.unfold3 = nn.Unfold(attn_kernels, padding=attn_kernels // 2)
@@ -203,7 +232,7 @@ class AttnConv2d(nn.Module):
         if self.num_heads[0] * self.num_heads[1] == 1:
             self.multi_head_downsampling = None
         else:
-            self.multi_head_downsampling = nn.AvgPool2d(self.num_heads)
+            self.multi_head_downsampling = nn.Unfold(self.num_heads, stride=self.num_heads) # nn.AvgPool2d(self.num_heads)
 
     def forward(self, x):
         y1 = self.unfold1(self.conv1(x))
@@ -215,12 +244,17 @@ class AttnConv2d(nn.Module):
         attn_kernls = y1.matmul(y2)
         # attn_kernls = y1.matmul(y2.transpose(2, 3))
         attn_kernls = self.softmax(attn_kernls.transpose(1, 3).flatten(2) / sqrt(self.in_channels * self.attn_kernels * self.attn_kernels)) # attn_kernls.transpose(1, 2).flatten(1, 2)
-        attn_value = attn_kernls.matmul(self.unfold3(x))
+        attn_value = attn_kernls.matmul(self.unfold3(self.conv3(x)))
         # attn_value = self.unfold3(x).transpose(1, 2).matmul(attn_kernls).transpose(1, 2)
         attn_value = attn_value.unflatten(2, (int(sqrt(attn_value.size(2))), -1))
         if self.multi_head_downsampling is not None:
             h, w = attn_value.shape[-2:]
-            attn_value = self.multi_head_downsampling(attn_value).unflatten(1, (-1,) + self.num_heads)
+            attn_value = self.multi_head_downsampling(attn_value).unflatten(1, (-1, self.num_heads[0] * self.num_heads[1], self.num_heads[0] * self.num_heads[1]))
+            attn_value = attn_value.transpose(2, 3).contiguous()
+            attn_value = attn_value.view(attn_value.size(0), -1, self.num_heads[0], self.num_heads[1], int(sqrt(attn_value.size(-1))), int(sqrt(attn_value.size(-1))))
+        # if self.multi_head_downsampling is not None:
+        #     h, w = attn_value.shape[-2:]
+        #     attn_value = self.multi_head_downsampling(attn_value).unflatten(1, (-1,) + self.num_heads)
             attn_value = attn_value.transpose(3, 4).contiguous()
             attn_value = attn_value.view(attn_value.shape[:2] + (attn_value.shape[2] * attn_value.shape[3], -1))
             if attn_value.size(2) * attn_value.size(3) < h * w:
@@ -400,7 +434,7 @@ class MetaResNet(nn.Module):
                 xor = ~xor
                 alpha_id += 1
                 beta_id += 1
-            layers.append(nn.MaxPool2d(2))
+            layers.append(nn.AvgPool2d(2))
             if image_sizes is not None:
                 image_sizes[0] //= 2
                 image_sizes[1] //= 2
