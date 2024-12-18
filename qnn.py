@@ -163,6 +163,24 @@ class ResConv2d(nn.Module):
             self.multi_head_downsampling = nn.Unfold(self.num_heads, stride=self.num_heads) # nn.AvgPool2d(self.num_heads)
         # self.conv.weight.data /= 10
 
+    def feature_map_stack(self, y):
+        if self.multi_head_downsampling is not None:
+            h, w = y.shape[-2:]
+            y = self.multi_head_downsampling(y)
+            y = y.unflatten(1, (-1, self.num_heads[0] * self.num_heads[1], self.num_heads[0] * self.num_heads[1]))
+            y = y.transpose(2, 3).contiguous()
+            y = y.view((y.size(0), -1) + self.num_heads + (int(sqrt(y.size(-1))), int(sqrt(y.size(-1)))))
+        # if self.multi_head_downsampling is not None:
+        #     h, w = y.shape[-2:]
+        #     y = self.multi_head_downsampling(y).unflatten(1, (-1,) + self.num_heads)
+            y = y.transpose(3, 4).contiguous()
+            y = y.view(y.shape[:2] + (y.shape[2] * y.shape[3], -1))
+            if y.size(2) * y.size(3) < h * w:
+                h1, w1 = (h - y.size(2)) // 2, (w - y.size(3)) // 2
+                h2, w2 = h - y.size(2) - h1, w - y.size(3) - w1
+                y = F.pad(y, (w1, w2, h1, h2))
+        return y
+
     def forward(self, x):
         # y = self.conv2(x)
         # if self.dropout is not None:
@@ -178,29 +196,9 @@ class ResConv2d(nn.Module):
         # y4 = self.conv4(x)
         x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
         if self.batch_norm:
-            y = self.bn(y1) + self.bn1(y2) * self.bn2(y3) if self.xor else self.bn(y1) # softxor(self.bn1(y2), self.bn2(y3))
+            y = self.bn(self.feature_map_stack(y1)) + self.bn1(self.feature_map_stack(y2)) * self.bn2(self.feature_map_stack(y3)) if self.xor else self.bn(self.feature_map_stack(y1)) # softxor(self.bn1(y2), self.bn2(y3))
         else:
-            y = self.ln(y1) + self.ln1(y2) * self.ln2(y3) if self.xor else self.ln(y1) # softxor(self.ln1(y2), self.ln2(y3))
-        # print(x.shape, y.shape, self.num_heads)
-        if self.multi_head_downsampling is not None:
-            h, w = y.shape[-2:]
-            y = self.multi_head_downsampling(y)
-            # print(y.shape)
-            y = y.unflatten(1, (-1, self.num_heads[0] * self.num_heads[1], self.num_heads[0] * self.num_heads[1]))
-            # print(y.shape)
-            y = y.transpose(2, 3).contiguous()
-            # print(y.shape)
-            y = y.view((y.size(0), -1) + self.num_heads + (int(sqrt(y.size(-1))), int(sqrt(y.size(-1)))))
-            # print(y.shape)
-        # if self.multi_head_downsampling is not None:
-        #     h, w = y.shape[-2:]
-        #     y = self.multi_head_downsampling(y).unflatten(1, (-1,) + self.num_heads)
-            y = y.transpose(3, 4).contiguous()
-            y = y.view(y.shape[:2] + (y.shape[2] * y.shape[3], -1))
-            if y.size(2) * y.size(3) < h * w:
-                h1, w1 = (h - y.size(2)) // 2, (w - y.size(3)) // 2
-                h2, w2 = h - y.size(2) - h1, w - y.size(3) - w1
-                y = F.pad(y, (w1, w2, h1, h2))
+            y = self.feature_map_stack(self.ln(y1)) + self.feature_map_stack(self.ln1(y2)) * self.feature_map_stack(self.ln2(y3)) if self.xor else self.feature_map_stack(self.ln(y1)) # softxor(self.ln1(y2), self.ln2(y3))
         return x + y
 
 
