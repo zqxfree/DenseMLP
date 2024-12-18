@@ -147,13 +147,14 @@ class ResConv2d(nn.Module):
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.conv2 = nn.Conv2d(in_channels // 2 if in_channels >= 10 else in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.conv3 = nn.Conv2d(in_channels // 2 if in_channels >= 10 else in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
-        self.conv4 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
-        self.bn = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
-        self.bn1 = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
-        self.bn2 = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
-        self.ln = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
-        self.ln1 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
-        self.ln2 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
+        if batch_norm:
+            self.norm1 = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
+            self.norm2 = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
+            self.norm3 = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
+        else:
+            self.norm1 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
+            self.norm2 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
+            self.norm3 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
         self.batch_norm = batch_norm
         self.xor = xor
         self.dropout = nn.Dropout()
@@ -195,10 +196,7 @@ class ResConv2d(nn.Module):
             y3 = self.conv3(x)
         # y4 = self.conv4(x)
         x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
-        if self.batch_norm:
-            y = self.bn(self.feature_map_stack(y1)) + self.bn1(self.feature_map_stack(y2)) * self.bn2(self.feature_map_stack(y3)) if self.xor else self.bn(self.feature_map_stack(y1)) # softxor(self.bn1(y2), self.bn2(y3))
-        else:
-            y = self.feature_map_stack(self.ln(y1)) + self.feature_map_stack(self.ln1(y2)) * self.feature_map_stack(self.ln2(y3)) if self.xor else self.feature_map_stack(self.ln(y1)) # softxor(self.ln1(y2), self.ln2(y3))
+        y = self.norm1(self.feature_map_stack(y1)) + self.norm2(self.feature_map_stack(y2)) * self.norm3(self.feature_map_stack(y3)) if self.xor else self.norm1(self.feature_map_stack(y1)) # softxor(self.bn1(y2), self.bn2(y3))
         return x + y
 
 
@@ -232,6 +230,25 @@ class AttnConv2d(nn.Module):
         else:
             self.multi_head_downsampling = nn.Unfold(self.num_heads, stride=self.num_heads) # nn.AvgPool2d(self.num_heads)
 
+    def feature_map_stack(self, attn_value):
+        if self.multi_head_downsampling is not None:
+            h, w = attn_value.shape[-2:]
+            attn_value = self.multi_head_downsampling(attn_value).unflatten(1, (
+            -1, self.num_heads[0] * self.num_heads[1], self.num_heads[0] * self.num_heads[1]))
+            attn_value = attn_value.transpose(2, 3).contiguous()
+            attn_value = attn_value.view(attn_value.size(0), -1, self.num_heads[0], self.num_heads[1],
+                                         int(sqrt(attn_value.size(-1))), int(sqrt(attn_value.size(-1))))
+            # if self.multi_head_downsampling is not None:
+            #     h, w = attn_value.shape[-2:]
+            #     attn_value = self.multi_head_downsampling(attn_value).unflatten(1, (-1,) + self.num_heads)
+            attn_value = attn_value.transpose(3, 4).contiguous()
+            attn_value = attn_value.view(attn_value.shape[:2] + (attn_value.shape[2] * attn_value.shape[3], -1))
+            if attn_value.size(2) * attn_value.size(3) < h * w:
+                h1, w1 = (h - attn_value.size(2)) // 2, (w - attn_value.size(3)) // 2
+                h2, w2 = h - attn_value.size(2) - h1, w - attn_value.size(3) - w1
+                attn_value = F.pad(attn_value, (w1, w2, h1, h2))
+        return attn_value
+
     def forward(self, x):
         y1 = self.unfold1(self.conv1(x))
         y1 = y1.unflatten(1, (-1, self.attn_kernels * self.attn_kernels)).transpose(1, 2)
@@ -245,25 +262,11 @@ class AttnConv2d(nn.Module):
         attn_value = attn_kernls.matmul(self.unfold3(self.conv3(x)))
         # attn_value = self.unfold3(x).transpose(1, 2).matmul(attn_kernls).transpose(1, 2)
         attn_value = attn_value.unflatten(2, (int(sqrt(attn_value.size(2))), -1))
-        if self.multi_head_downsampling is not None:
-            h, w = attn_value.shape[-2:]
-            attn_value = self.multi_head_downsampling(attn_value).unflatten(1, (-1, self.num_heads[0] * self.num_heads[1], self.num_heads[0] * self.num_heads[1]))
-            attn_value = attn_value.transpose(2, 3).contiguous()
-            attn_value = attn_value.view(attn_value.size(0), -1, self.num_heads[0], self.num_heads[1], int(sqrt(attn_value.size(-1))), int(sqrt(attn_value.size(-1))))
-        # if self.multi_head_downsampling is not None:
-        #     h, w = attn_value.shape[-2:]
-        #     attn_value = self.multi_head_downsampling(attn_value).unflatten(1, (-1,) + self.num_heads)
-            attn_value = attn_value.transpose(3, 4).contiguous()
-            attn_value = attn_value.view(attn_value.shape[:2] + (attn_value.shape[2] * attn_value.shape[3], -1))
-            if attn_value.size(2) * attn_value.size(3) < h * w:
-                h1, w1 = (h - attn_value.size(2)) // 2, (w - attn_value.size(3)) // 2
-                h2, w2 = h - attn_value.size(2) - h1, w - attn_value.size(3) - w1
-                attn_value = F.pad(attn_value, (w1, w2, h1, h2))
         # x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
         if x.size() == attn_value.size():
-            return self.conv_momentum * x + self.norm(attn_value)
+            return self.conv_momentum * x + self.norm(self.feature_map_stack(attn_value))
         else:
-            return self.conv_momentum(x) + self.norm(attn_value)
+            return self.conv_momentum(x) + self.norm(self.feature_map_stack(attn_value))
 
 
 # class AttnConv2d(nn.Module):
