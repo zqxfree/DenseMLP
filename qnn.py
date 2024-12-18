@@ -196,58 +196,24 @@ class ResConv2d(nn.Module):
             y3 = self.conv3(x)
         # y4 = self.conv4(x)
         x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
-        y = self.norm1(self.feature_map_stack(y1)) + self.norm2(self.feature_map_stack(y2)) * self.norm3(self.feature_map_stack(y3)) if self.xor else self.norm1(self.feature_map_stack(y1)) # softxor(self.bn1(y2), self.bn2(y3))
-        return x + y
+        # y = self.norm1(self.feature_map_stack(y1)) + self.norm2(self.feature_map_stack(y2)) * self.norm3(self.feature_map_stack(y3)) if self.xor else self.norm1(self.feature_map_stack(y1)) # softxor(self.bn1(y2), self.bn2(y3))
+        y = self.norm1(y1) + self.norm2(y2) * self.norm3(y3) if self.xor else self.norm1(y1)
+        return x + self.feature_map_stack(y)
 
 
 class AttnConv2d(nn.Module):
-    def __init__(self, image_size, in_channels, out_channels, attn_kernels=3, kernels=3, conv_momentum=None,
-                 num_heads=1, batch_norm=True):
+    def __init__(self, image_size, in_channels, out_channels, attn_kernels=3, kernels=3):
         super(AttnConv2d, self).__init__()
-        if in_channels == out_channels:
-            self.conv_momentum = nn.Parameter(torch.tensor(1. if conv_momentum is None else conv_momentum))
-        else:
-            self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
-        if '__getitem__' in dir(num_heads):
-            self.num_heads = num_heads
-        else:
-            self.num_heads = (num_heads, num_heads)
         self.conv1 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
         self.conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.conv3 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
         self.unfold1 = nn.Unfold(attn_kernels, stride=attn_kernels)
         self.unfold2 = nn.Unfold(attn_kernels, stride=attn_kernels)
         self.unfold3 = nn.Unfold(attn_kernels, padding=attn_kernels // 2)
-        self.norm = ResBatchNorm2d(out_channels, 0.1816, short_cut=False) if batch_norm else ResLayerNorm2d(image_size, 0.1816, short_cut=False)
         self.attn_kernels = attn_kernels
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.softmax = nn.Softmax(2)
-        # self.attn_value_kernel = nn.Parameter(0.1816 * torch.randn(out_channels, in_channels, attn_kernels, attn_kernels))
-        self.dropout = nn.Dropout()
-        if self.num_heads[0] * self.num_heads[1] == 1:
-            self.multi_head_downsampling = None
-        else:
-            self.multi_head_downsampling = nn.Unfold(self.num_heads, stride=self.num_heads) # nn.AvgPool2d(self.num_heads)
-
-    def feature_map_stack(self, attn_value):
-        if self.multi_head_downsampling is not None:
-            h, w = attn_value.shape[-2:]
-            attn_value = self.multi_head_downsampling(attn_value).unflatten(1, (
-            -1, self.num_heads[0] * self.num_heads[1], self.num_heads[0] * self.num_heads[1]))
-            attn_value = attn_value.transpose(2, 3).contiguous()
-            attn_value = attn_value.view(attn_value.size(0), -1, self.num_heads[0], self.num_heads[1],
-                                         int(sqrt(attn_value.size(-1))), int(sqrt(attn_value.size(-1))))
-            # if self.multi_head_downsampling is not None:
-            #     h, w = attn_value.shape[-2:]
-            #     attn_value = self.multi_head_downsampling(attn_value).unflatten(1, (-1,) + self.num_heads)
-            attn_value = attn_value.transpose(3, 4).contiguous()
-            attn_value = attn_value.view(attn_value.shape[:2] + (attn_value.shape[2] * attn_value.shape[3], -1))
-            if attn_value.size(2) * attn_value.size(3) < h * w:
-                h1, w1 = (h - attn_value.size(2)) // 2, (w - attn_value.size(3)) // 2
-                h2, w2 = h - attn_value.size(2) - h1, w - attn_value.size(3) - w1
-                attn_value = F.pad(attn_value, (w1, w2, h1, h2))
-        return attn_value
 
     def forward(self, x):
         y1 = self.unfold1(self.conv1(x))
@@ -258,15 +224,85 @@ class AttnConv2d(nn.Module):
         # y2 = y2.unflatten(1, (self.attn_kernels * self.attn_kernels, -1))
         attn_kernls = y1.matmul(y2)
         # attn_kernls = y1.matmul(y2.transpose(2, 3))
-        attn_kernls = self.softmax(attn_kernls.transpose(1, 3).flatten(2) / sqrt(self.in_channels * self.attn_kernels * self.attn_kernels)) # attn_kernls.transpose(1, 2).flatten(1, 2)
+        attn_kernls = self.softmax(attn_kernls.transpose(1, 3).flatten(2) / sqrt(
+            self.in_channels * self.attn_kernels * self.attn_kernels))  # attn_kernls.transpose(1, 2).flatten(1, 2)
         attn_value = attn_kernls.matmul(self.unfold3(self.conv3(x)))
         # attn_value = self.unfold3(x).transpose(1, 2).matmul(attn_kernls).transpose(1, 2)
         attn_value = attn_value.unflatten(2, (int(sqrt(attn_value.size(2))), -1))
-        # x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
-        if x.size() == attn_value.size():
-            return self.conv_momentum * x + self.norm(self.feature_map_stack(attn_value))
+        return attn_value
+
+
+class ResAttnConv2d(nn.Module):
+    def __init__(self, image_size, in_channels, out_channels, attn_kernels=3, kernels=3, conv_momentum=None,
+                 num_heads=1, batch_norm=True, xor=True):
+        super(ResAttnConv2d, self).__init__()
+        if in_channels != out_channels:
+            self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
         else:
-            return self.conv_momentum(x) + self.norm(self.feature_map_stack(attn_value))
+            self.conv_momentum = nn.Parameter(torch.tensor(1. if conv_momentum is None else conv_momentum))
+        if '__getitem__' in dir(num_heads):
+            self.num_heads = num_heads
+        else:
+            self.num_heads = (num_heads, num_heads)
+        # self.alpha = nn.Parameter(torch.tensor(0.))
+        self.conv1 = AttnConv2d(image_size, in_channels, out_channels, attn_kernels, kernels)
+        self.conv2 = AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels, attn_kernels, kernels)
+        self.conv3 = AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels, attn_kernels, kernels)
+        if batch_norm:
+            self.norm1 = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
+            self.norm2 = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
+            self.norm3 = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
+        else:
+            self.norm1 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
+            self.norm2 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
+            self.norm3 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
+        self.batch_norm = batch_norm
+        self.dropout = nn.Dropout()
+        self.xor = xor
+        if self.num_heads[0] * self.num_heads[1] == 1:
+            self.multi_head_downsampling = None
+        else:
+            self.multi_head_downsampling = nn.Unfold(self.num_heads,
+                                                     stride=self.num_heads)  # nn.AvgPool2d(self.num_heads)
+        # self.conv.weight.data /= 10
+
+    def feature_map_stack(self, y):
+        if self.multi_head_downsampling is not None:
+            h, w = y.shape[-2:]
+            y = self.multi_head_downsampling(y)
+            y = y.unflatten(1, (-1, self.num_heads[0] * self.num_heads[1], self.num_heads[0] * self.num_heads[1]))
+            y = y.transpose(2, 3).contiguous()
+            y = y.view((y.size(0), -1) + self.num_heads + (int(sqrt(y.size(-1))), int(sqrt(y.size(-1)))))
+            # if self.multi_head_downsampling is not None:
+            #     h, w = y.shape[-2:]
+            #     y = self.multi_head_downsampling(y).unflatten(1, (-1,) + self.num_heads)
+            y = y.transpose(3, 4).contiguous()
+            y = y.view(y.shape[:2] + (y.shape[2] * y.shape[3], -1))
+            if y.size(2) * y.size(3) < h * w:
+                h1, w1 = (h - y.size(2)) // 2, (w - y.size(3)) // 2
+                h2, w2 = h - y.size(2) - h1, w - y.size(3) - w1
+                y = F.pad(y, (w1, w2, h1, h2))
+        return y
+
+    def forward(self, x):
+        # y = self.conv2(x)
+        # if self.dropout is not None:
+        #     y = self.dropout(y)
+        y1 = self.conv1(x)
+        if x.size(1) >= 10:
+            x1, x2 = x.chunk(2, 1)
+            y2 = self.conv2(x1)
+            y3 = self.conv3(x1)
+        else:
+            y2 = self.conv2(x)
+            y3 = self.conv3(x)
+        # y4 = self.conv4(x)
+        x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
+        # y = self.norm1(self.feature_map_stack(y1)) + self.norm2(self.feature_map_stack(y2)) * self.norm3(
+        #     self.feature_map_stack(y3)) if self.xor else self.norm1(
+        #     self.feature_map_stack(y1))  # softxor(self.bn1(y2), self.bn2(y3))
+        y = self.norm1(y1) + self.norm2(y2) * self.norm3(y3) if self.xor else self.norm1(y1)
+        return x + self.feature_map_stack(y)
 
 
 # class AttnConv2d(nn.Module):
@@ -394,8 +430,8 @@ class MetaResConv2d(nn.Module):
             # ResReLU(relu_neg_momentum, reverse=True)
             ResBatchNorm2d(in_channels, norm_scale, bias=False, short_cut=True),
             # ResLayerNorm2d(image_size, norm_scale, bias=False, short_cut=True),
-            AttnConv2d(image_size, in_channels, out_channels, kernel_size, kernel_size, conv_momentum, num_heads=2,
-                       batch_norm=True),
+            ResAttnConv2d(image_size, in_channels, out_channels, kernel_size, kernel_size, conv_momentum, num_heads=2,
+                       batch_norm=True, xor=True),
             ResBatchNorm2d(out_channels, norm_scale, bias=False, short_cut=True),
             ResConv2d(image_size, out_channels, out_channels, kernel_size, conv_momentum, num_heads=1, batch_norm=True,
                       xor=False),
