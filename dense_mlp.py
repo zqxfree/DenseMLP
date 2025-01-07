@@ -1113,83 +1113,83 @@ class ResAttention2d(nn.Module):
         return y
 
 
-# class AttnConv2d(nn.Module):
-#     def __init__(self, image_size, in_channels, out_channels, attn_kernels=3, kernels=3, conv_momentum=None, batch_norm=True):
-#         super(AttnConv2d, self).__init__()
-#         if in_channels != out_channels:
-#             self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
-#         else:
-#             self.conv_momentum = nn.Parameter(torch.tensor(1. if conv_momentum is None else conv_momentum))
-#         self.conv1 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
-#         self.conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
-#         self.unfold1 = nn.Unfold(attn_kernels, stride=attn_kernels)
-#         self.unfold2 = nn.Unfold(attn_kernels, stride=attn_kernels)
-#         # self.prenorm1 = ResLayerNorm2d(image_size, 0.1816, bias=False, short_cut=True)
-#         # self.prenorm2 = ResLayerNorm2d(image_size, 0.1816, bias=False, short_cut=True)
-#         # self.prenorm3 = ResLayerNorm2d(image_size, 0.1816, bias=False, short_cut=True)
-#         # if batch_norm:
-#         #     self.norm1 = ResBatchNorm2d(in_channels, 0.1816, short_cut=False)
-#         #     self.norm2 = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
-#         #     self.norm3 = ResBatchNorm2d(out_channels, 0.1816, short_cut=True)
-#         # else:
-#         #     self.norm1 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
-#         #     self.norm2 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
-#         #     self.norm3 = ResLayerNorm2d(image_size, 0.1816, short_cut=True)
-#         self.norm = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
-#         self.batch_norm = batch_norm
-#         self.attn_kernels = attn_kernels
-#         self.in_channels = in_channels
-#         self.out_channels = out_channels
-#         self.softmax = nn.Softmax(0)
-#         self.attn_value_kernel = nn.Parameter(0.1816 * torch.randn(out_channels, in_channels, attn_kernels, attn_kernels))
-#         self.dropout = nn.Dropout()
-#
-#     def forward(self, x):
-#         y1 = self.unfold1(self.conv1(x))
-#         y1 = y1.unflatten(1, (-1, self.attn_kernels * self.attn_kernels)).transpose(0, 2).flatten(2) #.flatten(0, 1)
-#         # y1 = y1.view(y1.size(0), -1, y1.size(2) * self.attn_kernels).transpose(0, 1).flatten(1)
-#         y2 = self.unfold2(self.conv2(x))
-#         y2 = y2.unflatten(1, (-1, self.attn_kernels * self.attn_kernels)).transpose(0, 2).flatten(2) #.flatten(0, 1)
-#         # y2 = y2.view(y2.size(0), -1, y2.size(2) * self.attn_kernels).transpose(0, 1).flatten(1)
-#         attn_kernls = y1.matmul(y2.transpose(-2, -1))
-#         # attn_kernls = attn_kernls.mean(0)
-#         # attn_kernls = self.softmax(attn_kernls.view(-1, self.attn_kernels * self.attn_kernels * self.in_channels))
-#         # attn_kernls = self.softmax(attn_kernls.transpose(0, 1).flatten(1))
-#
-#         # attn_kernls = self.softmax(attn_kernls.transpose(0, 1).flatten(1))
-#         # attn_kernls = self.softmax(attn_kernls.transpose(0, 1) / sqrt(self.in_channels)) # .flatten(0, 1) * self.attn_kernels * self.attn_kernels
-#         attn_kernls = self.softmax(attn_kernls.flatten(0, 1) / sqrt(self.in_channels * self.attn_kernels * self.attn_kernels)) # .transpose(0, 1) * self.attn_kernels * self.attn_kernels
-#         # attn_kernls = attn_kernls.permute([2, 0, 1]).unflatten(-1, (self.attn_kernels, -1))
-#         attn_kernls = attn_kernls.unflatten(0, (self.attn_kernels * self.attn_kernels, -1)).transpose(0, 2).unflatten(-1, (self.attn_kernels, -1))#  .transpose(0, 1) # contiguous()..view(-1, self.in_channels, self.attn_kernels, self.attn_kernels)
-#         # attn_kernls *= self.attn_value_kernel
-#         # x = self.prenorm3(x)
-#         attn_value = F.conv2d(x, attn_kernls, padding=self.attn_kernels // 2)
-#         x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
-#         return x + self.norm(attn_value)
+class AttnConv2d(nn.Module):
+    def __init__(self, image_size, in_channels, out_channels, attn_kernels=3, kernels=3, conv_momentum=None, batch_norm=True):
+        super(AttnConv2d, self).__init__()
+        if in_channels != out_channels:
+            self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
+        else:
+            self.conv_momentum = nn.Parameter(torch.tensor(1. if conv_momentum is None else conv_momentum))
+        self.conv1 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
+        self.conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.unfold1 = nn.Unfold(attn_kernels, stride=attn_kernels)
+        self.unfold2 = nn.Unfold(attn_kernels, stride=attn_kernels)
+        # self.prenorm1 = ResLayerNorm2d(image_size, 0.1816, bias=False, short_cut=True)
+        # self.prenorm2 = ResLayerNorm2d(image_size, 0.1816, bias=False, short_cut=True)
+        # self.prenorm3 = ResLayerNorm2d(image_size, 0.1816, bias=False, short_cut=True)
+        # if batch_norm:
+        #     self.norm1 = ResBatchNorm2d(in_channels, 0.1816, short_cut=False)
+        #     self.norm2 = ResBatchNorm2d(out_channels, 0.1816, short_cut=False)
+        #     self.norm3 = ResBatchNorm2d(out_channels, 0.1816, short_cut=True)
+        # else:
+        #     self.norm1 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
+        #     self.norm2 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
+        #     self.norm3 = ResLayerNorm2d(image_size, 0.1816, short_cut=True)
+        self.norm = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
+        self.batch_norm = batch_norm
+        self.attn_kernels = attn_kernels
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.softmax = nn.Softmax(0)
+        self.attn_value_kernel = nn.Parameter(0.1816 * torch.randn(out_channels, in_channels, attn_kernels, attn_kernels))
+        self.dropout = nn.Dropout()
+
+    def forward(self, x):
+        y1 = self.unfold1(self.conv1(x))
+        y1 = y1.unflatten(1, (-1, self.attn_kernels * self.attn_kernels)).transpose(0, 2).flatten(2) #.flatten(0, 1)
+        # y1 = y1.view(y1.size(0), -1, y1.size(2) * self.attn_kernels).transpose(0, 1).flatten(1)
+        y2 = self.unfold2(self.conv2(x))
+        y2 = y2.unflatten(1, (-1, self.attn_kernels * self.attn_kernels)).transpose(0, 2).flatten(2) #.flatten(0, 1)
+        # y2 = y2.view(y2.size(0), -1, y2.size(2) * self.attn_kernels).transpose(0, 1).flatten(1)
+        attn_kernls = y1.matmul(y2.transpose(-2, -1))
+        # attn_kernls = attn_kernls.mean(0)
+        # attn_kernls = self.softmax(attn_kernls.view(-1, self.attn_kernels * self.attn_kernels * self.in_channels))
+        # attn_kernls = self.softmax(attn_kernls.transpose(0, 1).flatten(1))
+
+        # attn_kernls = self.softmax(attn_kernls.transpose(0, 1).flatten(1))
+        # attn_kernls = self.softmax(attn_kernls.transpose(0, 1) / sqrt(self.in_channels)) # .flatten(0, 1) * self.attn_kernels * self.attn_kernels
+        attn_kernls = self.softmax(attn_kernls.flatten(0, 1) / sqrt(self.in_channels * self.attn_kernels * self.attn_kernels)) # .transpose(0, 1) * self.attn_kernels * self.attn_kernels
+        # attn_kernls = attn_kernls.permute([2, 0, 1]).unflatten(-1, (self.attn_kernels, -1))
+        attn_kernls = attn_kernls.unflatten(0, (self.attn_kernels * self.attn_kernels, -1)).transpose(0, 2).unflatten(-1, (self.attn_kernels, -1))#  .transpose(0, 1) # contiguous()..view(-1, self.in_channels, self.attn_kernels, self.attn_kernels)
+        # attn_kernls *= self.attn_value_kernel
+        # x = self.prenorm3(x)
+        attn_value = F.conv2d(x, attn_kernls, padding=self.attn_kernels // 2)
+        x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
+        return x + self.norm(attn_value)
 
 
-# class XorAttnConv2d(nn.Module):
-#     def __init__(self, image_size, in_channels, out_channels, attn_kernels=3, kernels=3, conv_momentum=None, batch_norm=True):
-#         super(XorAttnConv2d, self).__init__()
-#         if in_channels != out_channels:
-#             self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
-#         else:
-#             self.conv_momentum = nn.Parameter(torch.tensor(1. if conv_momentum is None else conv_momentum))
-#         self.attn_conv1 = AttnConv2d(image_size, in_channels, out_channels, attn_kernels, kernels, conv_momentum, batch_norm)
-#         self.attn_conv2 = AttnConv2d(image_size, in_channels, out_channels, attn_kernels, kernels, conv_momentum,
-#                                      batch_norm)
-#         self.attn_conv3 = AttnConv2d(image_size, in_channels, out_channels, attn_kernels, kernels, conv_momentum,
-#                                      batch_norm)
-#         self.norm1 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
-#         self.norm2 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
-#         self.norm3 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
-#
-#     def forward(self, x):
-#         y1 = self.attn_conv1(x)
-#         y2 = self.attn_conv2(x)
-#         y3 = self.attn_conv3(x)
-#         x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
-#         return x + self.norm1(y1) + self.norm2(y2) * self.norm3(y3)
+class XorAttnConv2d(nn.Module):
+    def __init__(self, image_size, in_channels, out_channels, attn_kernels=3, kernels=3, conv_momentum=None, batch_norm=True):
+        super(XorAttnConv2d, self).__init__()
+        if in_channels != out_channels:
+            self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
+        else:
+            self.conv_momentum = nn.Parameter(torch.tensor(1. if conv_momentum is None else conv_momentum))
+        self.attn_conv1 = AttnConv2d(image_size, in_channels, out_channels, attn_kernels, kernels, conv_momentum, batch_norm)
+        self.attn_conv2 = AttnConv2d(image_size, in_channels, out_channels, attn_kernels, kernels, conv_momentum,
+                                     batch_norm)
+        self.attn_conv3 = AttnConv2d(image_size, in_channels, out_channels, attn_kernels, kernels, conv_momentum,
+                                     batch_norm)
+        self.norm1 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
+        self.norm2 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
+        self.norm3 = ResLayerNorm2d(image_size, 0.1816, short_cut=False)
+
+    def forward(self, x):
+        y1 = self.attn_conv1(x)
+        y2 = self.attn_conv2(x)
+        y3 = self.attn_conv3(x)
+        x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
+        return x + self.norm1(y1) + self.norm2(y2) * self.norm3(y3)
 
 class ResConv2d(nn.Module):
     def __init__(self, image_size, in_channels, out_channels, kernels=3, conv_momentum=None, num_heads=1, batch_norm=True, xor=True):
@@ -1258,3 +1258,406 @@ class ResConv2d(nn.Module):
         # y = self.norm1(self.feature_map_stack(y1)) + self.norm2(self.feature_map_stack(y2)) * self.norm3(self.feature_map_stack(y3)) if self.xor else self.norm1(self.feature_map_stack(y1)) # softxor(self.bn1(y2), self.bn2(y3))
         y = self.norm1(y1) + self.norm2(y2) * self.norm3(y3) if self.xor else self.norm1(y1)
         return x + self.feature_map_stack(y)
+
+
+class ResConv2d(nn.Module):
+    def __init__(self, image_size, in_channels, out_channels, norm_scale, kernels=3, conv_momentum=None, num_heads=1, pre_norm=False, batch_norm=True, xor=True):
+        super(ResConv2d, self).__init__()
+        if in_channels != out_channels:
+            self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
+        else:
+            self.conv_momentum = nn.Parameter(torch.tensor(1.))
+        if '__getitem__' in dir(num_heads):
+            self.num_heads = num_heads
+        else:
+            self.num_heads = (num_heads, num_heads)
+        if batch_norm:
+            self.conv1 = nn.Sequential(
+                ResBatchNorm2d(in_channels // 2 if in_channels >= 10 else in_channels, norm_scale, short_cut=0.01),
+                nn.Conv2d(in_channels // 2 if in_channels >= 10 else in_channels, out_channels // 2, kernels,
+                          padding=kernels // 2, bias=False),
+                ResBatchNorm2d(out_channels // 2, norm_scale, short_cut=0.6)
+            )
+            self.conv2 = nn.Sequential(
+                ResBatchNorm2d(in_channels // 2 if in_channels >= 10 else in_channels, norm_scale, short_cut=0.01),
+                nn.Conv2d(in_channels // 2 if in_channels >= 10 else in_channels, out_channels // 2, kernels,
+                          padding=kernels // 2, bias=False),
+                ResBatchNorm2d(out_channels // 2, norm_scale, short_cut=0.6)
+            )
+            self.conv3 = nn.Sequential(
+                ResBatchNorm2d(in_channels // 2 if in_channels >= 10 else in_channels, norm_scale, short_cut=0.01),
+                nn.Conv2d(in_channels // 2 if in_channels >= 10 else in_channels, out_channels // 2, kernels,
+                          padding=kernels // 2, bias=False),
+                ResBatchNorm2d(out_channels // 2, norm_scale, short_cut=0.6)
+            )
+            self.conv4 = nn.Sequential(
+                ResBatchNorm2d(in_channels // 2 if in_channels >= 10 else in_channels, norm_scale, short_cut=0.01),
+                nn.Conv2d(in_channels // 2 if in_channels >= 10 else in_channels, out_channels // 2, kernels,
+                          padding=kernels // 2, bias=False),
+                ResBatchNorm2d(out_channels // 2, norm_scale, short_cut=0.6)
+            )
+        # else:
+        #     self.conv1 = nn.Sequential(
+        #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.01),
+        #         nn.Conv2d(in_channels // 2 if in_channels >= 10 else in_channels, out_channels, kernels,
+        #                   padding=kernels // 2, bias=False),
+        #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.6),
+        #     )
+        #     self.conv2 = nn.Sequential(
+        #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.01),
+        #         nn.Conv2d(in_channels // 2 if in_channels >= 10 else in_channels, out_channels, kernels,
+        #                   padding=kernels // 2, bias=False),
+        #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.6),
+        #     )
+        #     self.conv3 = nn.Sequential(
+        #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.01),
+        #         nn.Conv2d(in_channels // 2 if in_channels >= 10 else in_channels, out_channels, kernels,
+        #                   padding=kernels // 2, bias=False),
+        #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.6),
+        #     )
+        #     self.conv4 = nn.Sequential(
+        #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.01),
+        #         nn.Conv2d(in_channels // 2 if in_channels >= 10 else in_channels, out_channels, kernels,
+        #                   padding=kernels // 2, bias=False),
+        #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.6),
+        #     )
+        self.norm_scale = norm_scale
+        self.batch_norm = batch_norm
+        self.xor = xor
+        self.dropout = nn.Dropout()
+        self.pre_relu = ResReLU(reverse=False)
+        self.in_channels = in_channels
+        if self.num_heads[0] * self.num_heads[1] == 1:
+            self.multi_head_downsampling = None
+        else:
+            self.multi_head_downsampling = nn.Unfold(self.num_heads, stride=self.num_heads) # nn.AvgPool2d(self.num_heads)
+
+    def feature_map_stack(self, y):
+        if self.multi_head_downsampling is not None:
+            h, w = y.shape[-2:]
+            y = self.multi_head_downsampling(y)
+            y = y.unflatten(1, (-1, self.num_heads[0] * self.num_heads[1], self.num_heads[0] * self.num_heads[1]))
+            y = y.transpose(2, 3).contiguous()
+            y = y.view((y.size(0), -1) + self.num_heads + (int(sqrt(y.size(-1))), int(sqrt(y.size(-1)))))
+        # if self.multi_head_downsampling is not None:
+        #     h, w = y.shape[-2:]
+        #     y = self.multi_head_downsampling(y).unflatten(1, (-1,) + self.num_heads)
+            y = y.transpose(3, 4).contiguous()
+            y = y.view(y.shape[:2] + (y.shape[2] * y.shape[3], -1))
+            if y.size(2) * y.size(3) < h * w:
+                h1, w1 = (h - y.size(2)) // 2, (w - y.size(3)) // 2
+                h2, w2 = h - y.size(2) - h1, w - y.size(3) - w1
+                y = F.pad(y, (w1, w2, h1, h2))
+        return y
+
+    def channel_split(self, x):
+        if x.size(1) >= 10:
+            x1, x2 = x.chunk(2, 1)
+            # x1, x2 = x.roll(self.in_channels // 4, 1).chunk(2, 1)
+        else:
+            # x1 = x.clone()
+            # x2 = x.clone()
+            # x3 = x.clone()
+            # x4 = x.clone()
+            # x1 = x2 = x3 = x4 =x
+            x1 = x2 = x
+        return x1, x2 #, x3, x4
+
+    def forward(self, x):
+        # x_norm = self.norm_scale * self.pre_norm(x)
+        x1, x2 = self.channel_split(x) #  + self.pos_code
+        y1 = self.conv1(x1)
+        y2 = self.conv2(x1)
+        y3 = self.conv3(x2)
+        y4 = self.conv4(x2)
+        x = 0.99 * self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
+        y = torch.cat([(y1 + y3) / sqrt(2), y2 * y4], 1) # / sqrt(3)
+        return x + self.feature_map_stack(y)
+
+    class AttnConv2d(nn.Module):
+        def __init__(self, image_size, in_channels, out_channels, hidden_kernels=3, attn_kernels=3, softmax=True):
+            super(AttnConv2d, self).__init__()
+            self.conv1 = nn.Conv2d(in_channels, in_channels, hidden_kernels, padding=hidden_kernels // 2, bias=False)
+            self.conv2 = nn.Conv2d(in_channels, out_channels, hidden_kernels, padding=hidden_kernels // 2, bias=False)
+            # self.conv3 = nn.Conv2d(in_channels, in_channels, hidden_kernels, padding=hidden_kernels // 2, bias=False)
+            self.unfold1 = nn.Unfold(attn_kernels, stride=attn_kernels)
+            self.unfold2 = nn.Unfold(attn_kernels, stride=attn_kernels)
+            self.unfold3 = nn.Unfold(attn_kernels, padding=attn_kernels // 2)
+            self.attn_kernels = attn_kernels
+            self.in_channels = in_channels
+            self.out_channels = out_channels
+            self.softmax = nn.Softmax(2) if softmax else None
+            # self.pos_code = nn.Parameter(torch.randn([in_channels] + image_size))
+            self.attn_weight = nn.Parameter(
+                nn.Conv2d(in_channels, out_channels, attn_kernels, bias=False).weight.data.flatten(1))
+
+        def forward(self, x):
+            # print(x.shape, self.conv1(x).shape, self.unfold1.kernel_size, self.unfold1.stride)
+            # x_pos = x + self.pos_code
+            y1 = self.unfold1(self.conv1(x))
+            # print(y1.shape)
+            y1 = y1.unflatten(1, (-1, self.attn_kernels * self.attn_kernels)).transpose(1, 2)
+            # print(y1.shape)
+            # y1 = y1.unflatten(1, (self.attn_kernels * self.attn_kernels, -1))
+            # print(x.shape, self.conv1(x).shape)
+            y2 = self.unfold2(self.conv2(x))
+            # print(y2.shape)
+            y2 = y2.unflatten(1, (-1, self.attn_kernels * self.attn_kernels)).permute([0, 2, 3, 1])
+            # print(y2.shape)
+            # y2 = y2.unflatten(1, (self.attn_kernels * self.attn_kernels, -1))
+            attn_kernls = y1.matmul(y2).transpose(1, 3).flatten(2) / sqrt(
+                self.in_channels * self.attn_kernels * self.attn_kernels)  # + self.attn_weight / self.attn_kernels
+            # print(attn_kernls.shape)
+            if self.softmax is not None:
+                attn_kernls = self.softmax(attn_kernls)  # attn_kernls.transpose(1, 2).flatten(1, 2)
+                # attn_kernls = attn_kernls.unflatten(2, (-1, self.attn_kernels * self.attn_kernels))
+            attn_kernls = attn_kernls * self.attn_weight
+            attn_value = attn_kernls.matmul(self.unfold3(x))
+            attn_value = attn_value.unflatten(2, (int(sqrt(attn_value.size(2))), -1))
+            return attn_value
+
+    # class AttnConv2d(nn.Module):
+    #     def __init__(self, image_size, in_channels, out_channels, hidden_kernels=3, conv_kernels=3, attn_kernels=3):
+    #         super(AttnConv2d, self).__init__()
+    #         self.kernel1 = AttnConvKernel(image_size, in_channels, out_channels, hidden_kernels, conv_kernels, softmax=False)
+    #         self.kernel2 = AttnConvKernel(image_size, in_channels, out_channels, hidden_kernels, attn_kernels, softmax=True)
+    #         self.unfold = nn.Unfold(conv_kernels, padding=conv_kernels // 2)
+    #         self.conv = nn.Conv2d(in_channels, in_channels, conv_kernels, padding=conv_kernels // 2, bias=False)
+    #         self.attn_kernels = attn_kernels
+    #
+    #     def forward(self, x):
+    #         x = x + self.pos_code
+    #         kernel1 = self.kernel1(x)
+    #         kernel2 = self.kernel2(x)
+    #         attn_kernls = kernel2 * kernel1 # kernel2 * (kernel1 + self.attn_weight / self.attn_kernels) #
+    #         # print(x.shape, self.conv(x).shape, self.unfold.kernel_size, self.unfold.stride, self.unfold(self.conv(x)).shape, attn_kernls.shape)
+    #         attn_value = attn_kernls.flatten(2).matmul(self.unfold(self.conv(x)))
+    #         # attn_value = self.unfold3(x).transpose(1, 2).matmul(attn_kernls).transpose(1, 2)
+    #         attn_value = attn_value.unflatten(2, (int(sqrt(attn_value.size(2))), -1))
+    #         return attn_value
+
+    class ResAttnConv2d(nn.Module):
+        def __init__(self, image_size, in_channels, out_channels, norm_scale, hidden_kernels=3, attn_kernels=3,
+                     conv_momentum=None,
+                     num_heads=1, batch_norm=True, xor=True):
+            super(ResAttnConv2d, self).__init__()
+            if in_channels != out_channels:
+                self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
+            else:
+                self.conv_momentum = nn.Parameter(torch.tensor(1.))
+            if '__getitem__' in dir(num_heads):
+                self.num_heads = num_heads
+            else:
+                self.num_heads = (num_heads, num_heads)
+
+            if batch_norm:
+                self.conv1 = nn.Sequential(
+                    ResBatchNorm2d(in_channels // 2 if in_channels >= 10 else in_channels, norm_scale, short_cut=0.01),
+                    AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels // 2,
+                               hidden_kernels, attn_kernels, softmax=True),
+                    ResBatchNorm2d(out_channels // 2, norm_scale, short_cut=0.6)
+                )
+                self.conv2 = nn.Sequential(
+                    ResBatchNorm2d(in_channels // 2 if in_channels >= 10 else in_channels, norm_scale, short_cut=0.01),
+                    AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels // 2,
+                               hidden_kernels, attn_kernels, softmax=True),
+                    ResBatchNorm2d(out_channels // 2, norm_scale, short_cut=0.6)
+                )
+                self.conv3 = nn.Sequential(
+                    ResBatchNorm2d(in_channels // 2 if in_channels >= 10 else in_channels, norm_scale, short_cut=0.01),
+                    AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels // 2,
+                               hidden_kernels, attn_kernels, softmax=True),
+                    ResBatchNorm2d(out_channels // 2, norm_scale, short_cut=0.6)
+                )
+                self.conv4 = nn.Sequential(
+                    ResBatchNorm2d(in_channels // 2 if in_channels >= 10 else in_channels, norm_scale, short_cut=0.01),
+                    AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels // 2,
+                               hidden_kernels, attn_kernels, softmax=True),
+                    ResBatchNorm2d(out_channels // 2, norm_scale, short_cut=0.6)
+                )
+            # else:
+            #     self.conv1 = nn.Sequential(
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.01),
+            #         AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels, 3, kernels, attn_kernels),
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.6),
+            #     )
+            #     self.conv2 = nn.Sequential(
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.01),
+            #         AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels, 3, kernels, attn_kernels),
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.6),
+            #     )
+            #     self.conv3 = nn.Sequential(
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.01),
+            #         AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels, 3, kernels, attn_kernels),
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.6),
+            #     )
+            #     self.conv4 = nn.Sequential(
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.01),
+            #         AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels, 3, kernels, attn_kernels),
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.6),
+            #     )
+            # self.pos_code = nn.Parameter(torch.randn([in_channels] + image_size))
+            self.batch_norm = batch_norm
+            self.norm_scale = norm_scale
+            self.xor = xor
+            if self.num_heads[0] * self.num_heads[1] == 1:
+                self.multi_head_downsampling = None
+            else:
+                self.multi_head_downsampling = nn.Unfold(self.num_heads,
+                                                         stride=self.num_heads)  # nn.AvgPool2d(self.num_heads)
+            self.dropout = nn.Dropout()
+            self.pre_relu = ResReLU(reverse=True)
+            self.in_channels = in_channels
+
+        def feature_map_stack(self, y):
+            if self.multi_head_downsampling is not None:
+                h, w = y.shape[-2:]
+                y = self.multi_head_downsampling(y)
+                y = y.unflatten(1, (-1, self.num_heads[0] * self.num_heads[1], self.num_heads[0] * self.num_heads[1]))
+                y = y.transpose(2, 3).contiguous()
+                y = y.view((y.size(0), -1) + self.num_heads + (int(sqrt(y.size(-1))), int(sqrt(y.size(-1)))))
+                y = y.transpose(3, 4).contiguous()
+                y = y.view(y.shape[:2] + (y.shape[2] * y.shape[3], -1))
+                if y.size(2) * y.size(3) < h * w:
+                    h1, w1 = (h - y.size(2)) // 2, (w - y.size(3)) // 2
+                    h2, w2 = h - y.size(2) - h1, w - y.size(3) - w1
+                    y = F.pad(y, (w1, w2, h1, h2))
+            return y
+
+        def channel_split(self, x):
+            if x.size(1) >= 10:
+                x1, x2 = x.chunk(2, 1)
+                # x1, x2 = x.roll(self.in_channels // 4, 1).chunk(2, 1)
+            else:
+                # x1 = x.clone()
+                # x2 = x.clone()
+                # x3 = x.clone()
+                # x4 = x.clone()
+                # x1 = x2 = x3 = x4 =x
+                x1 = x2 = x
+            return x1, x2  # , x3, x4
+
+        def forward(self, x):
+            # x_norm = self.norm_scale * self.pre_norm(x)
+            x1, x2 = self.channel_split(x)  # + self.pos_code
+            y1 = self.conv1(x1)
+            y2 = self.conv2(x1)
+            y3 = self.conv3(x2)
+            y4 = self.conv4(x2)
+            x = 0.99 * self.conv_momentum * x if type(
+                self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
+            y = torch.cat([(y1 + y3) / sqrt(2), y2 * y4], 1)  # / sqrt(3) (y1 + y3 + y2 * y4) / sqrt(3)
+            return x + self.feature_map_stack(y)
+
+    class ResAttnConv2d(nn.Module):
+        def __init__(self, image_size, in_channels, out_channels, norm_scale, hidden_kernels=3, attn_kernels=3,
+                     conv_momentum=None,
+                     num_heads=1, batch_norm=True, xor=True):
+            super(ResAttnConv2d, self).__init__()
+            if in_channels != out_channels:
+                self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
+            else:
+                self.conv_momentum = nn.Parameter(torch.tensor(1.))
+            if '__getitem__' in dir(num_heads):
+                self.num_heads = num_heads
+            else:
+                self.num_heads = (num_heads, num_heads)
+
+            if batch_norm:
+                self.conv1 = nn.Sequential(
+                    ResBatchNorm2d(in_channels // 2 if in_channels >= 10 else in_channels, norm_scale, short_cut=0.01),
+                    AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels // 2,
+                               hidden_kernels, attn_kernels, softmax=True),
+                    ResBatchNorm2d(out_channels // 2, norm_scale, short_cut=0.6)
+                )
+                self.conv2 = nn.Sequential(
+                    ResBatchNorm2d(in_channels // 2 if in_channels >= 10 else in_channels, norm_scale, short_cut=0.01),
+                    AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels // 2,
+                               hidden_kernels, attn_kernels, softmax=True),
+                    ResBatchNorm2d(out_channels // 2, norm_scale, short_cut=0.6)
+                )
+                self.conv3 = nn.Sequential(
+                    ResBatchNorm2d(in_channels // 2 if in_channels >= 10 else in_channels, norm_scale, short_cut=0.01),
+                    AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels // 2,
+                               hidden_kernels, attn_kernels, softmax=True),
+                    ResBatchNorm2d(out_channels // 2, norm_scale, short_cut=0.6)
+                )
+                self.conv4 = nn.Sequential(
+                    ResBatchNorm2d(in_channels // 2 if in_channels >= 10 else in_channels, norm_scale, short_cut=0.01),
+                    AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels // 2,
+                               hidden_kernels, attn_kernels, softmax=True),
+                    ResBatchNorm2d(out_channels // 2, norm_scale, short_cut=0.6)
+                )
+            # else:
+            #     self.conv1 = nn.Sequential(
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.01),
+            #         AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels, 3, kernels, attn_kernels),
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.6),
+            #     )
+            #     self.conv2 = nn.Sequential(
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.01),
+            #         AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels, 3, kernels, attn_kernels),
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.6),
+            #     )
+            #     self.conv3 = nn.Sequential(
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.01),
+            #         AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels, 3, kernels, attn_kernels),
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.6),
+            #     )
+            #     self.conv4 = nn.Sequential(
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.01),
+            #         AttnConv2d(image_size, in_channels // 2 if in_channels >= 10 else in_channels, out_channels, 3, kernels, attn_kernels),
+            #         ResLayerNorm2d(image_size, norm_scale, short_cut=0.6),
+            #     )
+            # self.pos_code = nn.Parameter(torch.randn([in_channels] + image_size))
+            self.batch_norm = batch_norm
+            self.norm_scale = norm_scale
+            self.xor = xor
+            if self.num_heads[0] * self.num_heads[1] == 1:
+                self.multi_head_downsampling = None
+            else:
+                self.multi_head_downsampling = nn.Unfold(self.num_heads,
+                                                         stride=self.num_heads)  # nn.AvgPool2d(self.num_heads)
+            self.dropout = nn.Dropout()
+            self.pre_relu = ResReLU(reverse=True)
+            self.in_channels = in_channels
+
+        def feature_map_stack(self, y):
+            if self.multi_head_downsampling is not None:
+                h, w = y.shape[-2:]
+                y = self.multi_head_downsampling(y)
+                y = y.unflatten(1, (-1, self.num_heads[0] * self.num_heads[1], self.num_heads[0] * self.num_heads[1]))
+                y = y.transpose(2, 3).contiguous()
+                y = y.view((y.size(0), -1) + self.num_heads + (int(sqrt(y.size(-1))), int(sqrt(y.size(-1)))))
+                y = y.transpose(3, 4).contiguous()
+                y = y.view(y.shape[:2] + (y.shape[2] * y.shape[3], -1))
+                if y.size(2) * y.size(3) < h * w:
+                    h1, w1 = (h - y.size(2)) // 2, (w - y.size(3)) // 2
+                    h2, w2 = h - y.size(2) - h1, w - y.size(3) - w1
+                    y = F.pad(y, (w1, w2, h1, h2))
+            return y
+
+        def channel_split(self, x):
+            if x.size(1) >= 10:
+                x1, x2 = x.chunk(2, 1)
+                # x1, x2 = x.roll(self.in_channels // 4, 1).chunk(2, 1)
+            else:
+                # x1 = x.clone()
+                # x2 = x.clone()
+                # x3 = x.clone()
+                # x4 = x.clone()
+                # x1 = x2 = x3 = x4 =x
+                x1 = x2 = x
+            return x1, x2  # , x3, x4
+
+        def forward(self, x):
+            # x_norm = self.norm_scale * self.pre_norm(x)
+            x1, x2 = self.channel_split(x)  # + self.pos_code
+            y1 = self.conv1(x1)
+            y2 = self.conv2(x1)
+            y3 = self.conv3(x2)
+            y4 = self.conv4(x2)
+            x = 0.99 * self.conv_momentum * x if type(
+                self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
+            y = torch.cat([(y1 + y3) / sqrt(2), y2 * y4], 1)  # / sqrt(3) (y1 + y3 + y2 * y4) / sqrt(3)
+            return x + self.feature_map_stack(y)
