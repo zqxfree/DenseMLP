@@ -413,7 +413,7 @@ batch_size = 100
 # ).cuda()
 model = nn.Sequential(
     # MetaResNet([[64, 2], [128, 2], [128, 4]], 1, 5, norm_scale=0.1816, image_sizes=[28, 28], dropout=False),
-    MetaResNet([[32, 2], [64, 2], [64, 4]], 1, 5, norm_scale=0.1816, image_sizes=[28, 28], dropout=False),
+    MetaResNet([[32, 2], [64, 2], [64, 4]], 1, 3, norm_scale=0.1816, image_sizes=[28, 28], dropout=False),
     # ResBatchNorm2d(512),
     # nn.Conv2d(512, 10, 2),
     nn.Flatten(1),

@@ -190,16 +190,16 @@ class ResConv2d(nn.Module):
         if in_channels != out_channels:
             self.conv_momentum1 = nn.Conv2d(in_channels, out_channels, 1, bias=False)
         else:
-            self.conv_momentum1 = nn.Conv2d(in_channels, out_channels, 1, bias=False) # nn.Conv2d(in_channels, out_channels, 1, bias=False)
+            self.conv_momentum1 = nn.Conv2d(in_channels, out_channels, 1, bias=False) # nn.Parameter(torch.tensor(1.)) # nn.Conv2d(in_channels, out_channels, 1, bias=False)
         if in_channels * 2 != out_channels:
             self.conv_momentum2 = nn.Conv2d(in_channels * 2, out_channels, 1, bias=False)
         else:
-            self.conv_momentum2 = nn.Parameter(torch.tensor(1.)) # nn.Conv2d(in_channels * 2, out_channels, 1, bias=False)
+            self.conv_momentum2 = nn.Parameter(torch.tensor(1.)) # nn.Conv2d(in_channels * 2, out_channels, 1, bias=False) #
         if '__getitem__' in dir(num_heads):
             self.num_heads = num_heads
         else:
             self.num_heads = (num_heads, num_heads)
-        self.pre_relu_norm = PreReLUResBatchNorm2d(in_channels, norm_scale, False, 0.618034, 0.)
+        self.pre_relu_norm = PreReLUResBatchNorm2d(in_channels, norm_scale, False, 0.5, 0.)
         self.conv = ButterflyGatingUnit(image_size, in_channels, norm_scale, hidden_kernels, kernels)
         self.full_conv = nn.Conv2d(in_channels * 2, out_channels, kernels, padding=kernels // 2, bias=False)
         self.norm_scale = norm_scale
@@ -235,9 +235,9 @@ class ResConv2d(nn.Module):
         y1, y2 = self.pre_relu_norm(x)
         y, _ = self.conv(y1, y2) #  + self.pos_code
         y_sum = y1 + y2
-        x1 = self.conv_momentum1(y_sum) # 0.618034 * self.conv_momentum1 *
-        x2 = self.conv_momentum2 * y if type(self.conv_momentum2) is nn.parameter.Parameter else self.conv_momentum2(y) #
-        return x1 + x2 + self.full_conv(y) # self.feature_map_stack(y)
+        x1 = self.conv_momentum1(y_sum) # 0.618034 * self.conv_momentum1 * y_sum if type(self.conv_momentum1) is nn.parameter.Parameter else
+        # x2 = y if type(self.conv_momentum2) is nn.parameter.Parameter else self.conv_momentum2(y) # self.conv_momentum2 *
+        return x1 + self.full_conv(y) # self.feature_map_stack(y)
 
 
 # class MetaResConv2d(nn.Module):
@@ -286,7 +286,7 @@ class MetaResNet(nn.Module):
         dropouts = [0.1816] * (len(num_layers) - 1) + [0.1816] if dropout else None
         alpha = 1. * torch.ones(num_hidden_layers)  # torch.sort(torch.cat([torch.full((1,), 1.), 0.905 + 0.09 * torch.rand(num_hidden_layers - 2), torch.full((1,), 0.9)]), descending=True).values #
         beta = 0. * torch.ones(num_hidden_layers + len(num_layers)) # torch.sort(torch.cat([torch.full((1,), 1.), 0.905 + 0.09 * torch.rand(num_hidden_layers + len(num_layers) - 3), torch.full((1,), 0.9)]), descending=True).values #
-        layers = [ResConv2d(None, init_channels, num_layers[0][0], norm_scale, hidden_kernels=3, kernels=3,
+        layers = [ResConv2d(None, init_channels, num_layers[0][0], norm_scale, kernel_size, kernel_size,
                      conv_momentum=None,
                      num_heads=1, batch_norm=True, xor=True)] # has_attn=False
         xor = True
@@ -295,11 +295,11 @@ class MetaResNet(nn.Module):
         # prob = True
         for n, (i, j) in enumerate(num_layers):
             if k > 0 and k != i:
-                layers.append(ResConv2d(None, k, i, norm_scale, hidden_kernels=3, kernels=3,
+                layers.append(ResConv2d(None, k, i, norm_scale, kernel_size, kernel_size,
                      conv_momentum=None, num_heads=1, batch_norm=True, xor=True))
                 beta_id += 1
             for id in range(j):
-                layers.append(ResConv2d(None, i, i, norm_scale, hidden_kernels=3, kernels=3,
+                layers.append(ResConv2d(None, i, i, norm_scale, kernel_size, kernel_size,
                      conv_momentum=None, num_heads=1, batch_norm=True, xor=True)) # id % 2 == 1
                 xor = ~xor
                 alpha_id += 1
