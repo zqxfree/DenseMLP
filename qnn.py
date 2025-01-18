@@ -125,8 +125,8 @@ class ReLUSplitNorm(nn.Module):
     def __init__(self, norm_scale, short_cut=None, relu_neg_momentum=0.):
         super(ReLUSplitNorm, self).__init__()
         self.short_cut = short_cut
-        self.short_cut_coef1 = nn.Parameter(torch.tensor(1.))
-        self.short_cut_coef2 = nn.Parameter(torch.tensor(1.))
+        self.short_cut_coef1 = nn.Parameter(torch.tensor(0.9))
+        self.short_cut_coef2 = nn.Parameter(torch.tensor(0.9))
         self.relu_neg_momentum1 = nn.Parameter(torch.tensor(relu_neg_momentum))
         self.relu_neg_momentum2 = nn.Parameter(torch.tensor(relu_neg_momentum))
         # self.avg_offset = nn.Parameter(torch.tensor(0.)) if avg_offset else None
@@ -134,14 +134,16 @@ class ReLUSplitNorm(nn.Module):
         self.norm_coef1 = nn.Parameter(torch.tensor(1.))
         self.norm_coef2 = nn.Parameter(torch.tensor(1.))
         self.norm_scale = norm_scale
+        self.alpha1 = nn.Parameter(torch.tensor(1.))
+        self.alpha2 = nn.Parameter(torch.tensor(1.))
 
     def forward(self, x):
         avg_dims = list(range(1, x.dim()))
         total_size = x.numel() / x.size(0)
         # 均值之上归一化
         avg0 = x.mean(avg_dims, keepdim=True)
-        x = x - avg0
-        x1 = F.relu(x)
+        x_norm = x - avg0
+        x1 = F.relu(x_norm)
         downmask = (x1 == 0).type(torch.int).data
         upmask = 1 - downmask
         # upmask = (x > avg0).type(torch.int).data
@@ -150,14 +152,47 @@ class ReLUSplitNorm(nn.Module):
         pos_size = upmask.sum(avg_dims, keepdim=True)
         neg_size = total_size - pos_size
         avg1 = x1.sum(avg_dims, keepdim=True) / pos_size
-        x1_norm = self.norm_scale * torch.sqrt(pos_size / total_size) * F.layer_norm(x1 + avg1.detach() * downmask, x1.shape[1:])
+        x1_norm = torch.sqrt(pos_size / total_size) * F.layer_norm(x1 + avg1.detach() * downmask, x1.shape[1:])
         # 均值之下归一化
-        x2 = x - x1
+        x2 = x_norm - x1
         avg2 = x2.sum(avg_dims, keepdim=True) / neg_size
-        x2_norm = self.norm_scale * torch.sqrt(neg_size / total_size) * F.layer_norm(x2 + avg2.detach() * upmask, x1.shape[1:])
-        x1 = self.short_cut * self.short_cut_coef1 * x1 + x1_norm # self.relu_neg_momentum1 * x_norm +
-        x2 = self.short_cut * self.short_cut_coef2 * x2 + x2_norm # self.relu_neg_momentum2 * x_norm +
-        return 0.5 * (self.norm_coef1 * x1_norm + self.norm_coef2 * x2_norm) + self.res_coef * x, x1, x2 # 0.9 * (self.norm_coef1 * x1_norm + self.norm_coef2 * x2_norm) +
+        x2_norm = torch.sqrt(neg_size / total_size) * F.layer_norm(x2 + avg2.detach() * upmask, x2.shape[1:])
+        x1 = x1 + x1_norm # self.relu_neg_momentum1 * x_norm + self.short_cut * self.short_cut_coef1 *
+        x2 = x2 + x2_norm # self.short_cut * self.short_cut_coef2 *
+        return x_norm, x1, x2 # 0.5 * (self.norm_coef1 * x1_norm + self.norm_coef2 * x2_norm) + self.res_coef * x
+
+
+# class ReLUSplitNorm(nn.Module):
+#     def __init__(self, norm_scale, short_cut=None, relu_neg_momentum=0.):
+#         super(ReLUSplitNorm, self).__init__()
+#         self.short_cut = short_cut
+#         self.short_cut_coef1 = nn.Parameter(torch.tensor(1.))
+#         self.short_cut_coef2 = nn.Parameter(torch.tensor(1.))
+#         self.relu_neg_momentum1 = nn.Parameter(torch.tensor(relu_neg_momentum))
+#         self.relu_neg_momentum2 = nn.Parameter(torch.tensor(relu_neg_momentum))
+#         # self.avg_offset = nn.Parameter(torch.tensor(0.)) if avg_offset else None
+#         self.res_coef = nn.Parameter(torch.tensor(1.))
+#         self.norm_coef1 = nn.Parameter(torch.tensor(1.))
+#         self.norm_coef2 = nn.Parameter(torch.tensor(1.))
+#         self.norm_scale = norm_scale
+#
+#     def forward(self, x):
+#         avg_dims = list(range(1, x.dim()))
+#         total_size = x.numel() / x.size(0)
+#         # 均值之上归一化
+#         avg0 = x.mean(avg_dims, keepdim=True)
+#         x = x - avg0
+#         x1 = F.relu(x)
+#         downmask = (x1 == 0).type(torch.int).data
+#         neg_size = downmask.sum(avg_dims, keepdim=True)
+#         pos_size = total_size - neg_size
+#         avg1 = x1.mean(avg_dims, keepdim=True) / pos_size
+#         x1_norm = self.norm_scale * (x1 - avg1) # self.norm_scale *
+#         # 均值之下归一化
+#         x2 = x - x1
+#         avg2 = x2.sum(avg_dims, keepdim=True) / neg_size
+#         x2_norm = self.norm_scale * (x2 - avg2)
+#         return 0.5 * (self.norm_coef1 * x1 + self.norm_coef2 * x2), x1, x2, x1_norm, x2_norm # 0.9 * (self.norm_coef1 * x1_norm + self.norm_coef2 * x2_norm) +
 
 
 class AttnConv2d(nn.Module):
@@ -202,14 +237,15 @@ class ButterflyGatingUnit(nn.Module):
         self.full_conv = nn.Conv2d(in_channels * 2, in_channels, 1)
         self.relu_split_norm = ReLUSplitNorm(norm_scale, 1., 0.)
         self.norm_scale = norm_scale
+        self.alpha1 = nn.Parameter(torch.tensor(1.))
+        self.alpha2 = nn.Parameter(torch.tensor(1.))
 
     def forward(self, x):
         x, x1, x2 = self.relu_split_norm(x)
         y1 = self.attn_conv(x1, x2)
+        # y1 = y1 - y1.mean([1, 2, 3], keepdim=True)
         y1 = self.norm_scale * F.layer_norm(y1, y1.shape[1:])
         y2 = self.conv2(x2)
-        # y3 = self.conv2(x2)
-        # y2 = self.norm_scale * self.norm_scale * F.layer_norm(y2, y2.shape[1:]) * F.layer_norm(y3, y3.shape[1:])
         y2 = self.norm_scale * F.layer_norm(y2, y2.shape[1:]) * x1
         y = torch.cat([y1, y2], 1)
         return x + self.full_conv(y)
