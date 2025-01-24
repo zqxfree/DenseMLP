@@ -7,7 +7,7 @@ import torch.nn.functional as F
 class Flipout(nn.Module):
     def __init__(self, p=0.25):
         super(Flipout, self).__init__()
-        assert 0 < p < 0.1816, "p should be smaller than 0.1816!"
+        assert 0 < p < 0.5, "p should be smaller than 0.5!"
         self.p = p
         self.flip_scale = 1. / (1. - 2. * p)
 
@@ -65,7 +65,6 @@ class AdaptiveFocalLoss(nn.Module):
         return -(label_weight * y_log).sum() / label_weight.sum()
 
 
-
 class ResBatchNorm2d(nn.Module):
     def __init__(self, in_channels, norm_scale, bias=False, short_cut=None):
         super(ResBatchNorm2d, self).__init__()
@@ -82,15 +81,15 @@ class ResBatchNorm2d(nn.Module):
 
 
 class ResLayerNorm2d(nn.Module):
-    def __init__(self, image_size, norm_scale, bias=False, short_cut=None):
+    def __init__(self, in_channels, norm_scale, bias=False, short_cut=None):
         super(ResLayerNorm2d, self).__init__()
-        self.ln = nn.LayerNorm(image_size, elementwise_affine=bias) # nn.BatchNorm2d(channels, affine=True) # FullNorm() # SphereNorm2d(channels)  #
+        # self.ln = nn.LayerNorm(image_size, elementwise_affine=bias) # nn.BatchNorm2d(channels, affine=True) # FullNorm() # SphereNorm2d(channels)  #
         self.norm_scale = norm_scale # nn.Parameter(torch.tensor(norm_scale)) #
         self.alpha = nn.Parameter(torch.tensor(1.)) if short_cut is not None else None
         self.shortcut = short_cut if short_cut is not None else None
 
     def forward(self, x):
-        y = self.norm_scale * self.bn(x)
+        y = self.norm_scale * F.layer_norm(x, x.shape[1:])
         if self.alpha is not None:
             y += self.shortcut * self.alpha * x
         return y # self.norm_scale * y
@@ -107,14 +106,14 @@ class ResReLU(nn.Module):
         return self.relu_neg_momentum * x + (-self.relu(-x) if self.reverse else self.relu(x))
 
 
-# class PreReLUResBatchNorm2d(nn.Module):
+# class ReLUSplitNorm(nn.Module):
 #     def __init__(self, in_channels, norm_scale, bias=False, short_cut=None, relu_neg_momentum=0.):
-#         super(PreReLUResBatchNorm2d, self).__init__()
-#         self.norm1 = ResBatchNorm2d(in_channels, norm_scale, bias, short_cut)
-#         self.norm2 = ResBatchNorm2d(in_channels, norm_scale, bias, short_cut)
+#         super(ReLUSplitNorm, self).__init__()
+#         self.norm1 = ResLayerNorm2d(in_channels, norm_scale, bias, short_cut)
+#         self.norm2 = ResLayerNorm2d(in_channels, norm_scale, bias, short_cut)
 #         self.relu1 = ResReLU(relu_neg_momentum, reverse=False)
 #         self.relu2 = ResReLU(relu_neg_momentum, reverse=True)
-
+#
 #     def forward(self, x):
 #         y1 = self.norm1(self.relu1(x))
 #         y2 = self.norm2(self.relu2(x))
@@ -122,152 +121,158 @@ class ResReLU(nn.Module):
 
 
 class ReLUSplitNorm(nn.Module):
-    def __init__(self, norm_scale, short_cut=None, relu_neg_momentum=0.):
+    def __init__(self, norm_scale, relu_neg_momentum=0.):
         super(ReLUSplitNorm, self).__init__()
-        self.short_cut = short_cut
-        self.short_cut_coef1 = nn.Parameter(torch.tensor(0.9))
-        self.short_cut_coef2 = nn.Parameter(torch.tensor(0.9))
-        self.relu_neg_momentum1 = nn.Parameter(torch.tensor(relu_neg_momentum))
-        self.relu_neg_momentum2 = nn.Parameter(torch.tensor(relu_neg_momentum))
+        self.up_norm_momentum = nn.Parameter(torch.tensor(1.))
+        self.down_norm_momentum = nn.Parameter(torch.tensor(1.))
+        self.avg_momentum1 = nn.Parameter(torch.tensor(1.))
+        self.avg_momentum2 = nn.Parameter(torch.tensor(1.))
+        self.up_relu_neg_momentum = nn.Parameter(torch.tensor(relu_neg_momentum))
+        self.down_relu_neg_momentum = nn.Parameter(torch.tensor(relu_neg_momentum))
         # self.avg_offset = nn.Parameter(torch.tensor(0.)) if avg_offset else None
         self.res_coef = nn.Parameter(torch.tensor(1.))
-        self.norm_coef1 = nn.Parameter(torch.tensor(1.))
-        self.norm_coef2 = nn.Parameter(torch.tensor(1.))
+        self.norm_coef1 = nn.Parameter(torch.tensor(0.9))
+        self.norm_coef2 = nn.Parameter(torch.tensor(0.9))
+        self.norm_scale1 = nn.Parameter(torch.tensor(norm_scale))
+        self.norm_scale2 = nn.Parameter(torch.tensor(norm_scale))
         self.norm_scale = norm_scale
+        # self.norm_shortcut1 = nn.Parameter(torch.tensor(1.))
+        # self.norm_shortcut2 = nn.Parameter(torch.tensor(1.))
         self.alpha1 = nn.Parameter(torch.tensor(1.))
         self.alpha2 = nn.Parameter(torch.tensor(1.))
 
     def forward(self, x):
         avg_dims = list(range(1, x.dim()))
-        total_size = x.numel() / x.size(0)
         # 均值之上归一化
-        avg0 = x.mean(avg_dims, keepdim=True)
-        x_norm = x - avg0
-        x1 = F.relu(x_norm)
-        downmask = (x1 == 0).type(torch.int).data
-        upmask = 1 - downmask
+        avg0 = x.mean() # x.mean(avg_dims, keepdim=True)
         # upmask = (x > avg0).type(torch.int).data
         # downmask = 1 - upmask
-        # x1 = x * upmask
-        pos_size = upmask.sum(avg_dims, keepdim=True)
-        neg_size = total_size - pos_size
-        avg1 = x1.sum(avg_dims, keepdim=True) / pos_size
-        x1_norm = torch.sqrt(pos_size / total_size) * F.layer_norm(x1 + avg1.detach() * downmask, x1.shape[1:])
+        # total_size = x.numel() / x.size(0)
+        # pos_size = upmask.sum(avg_dims, keepdim=True)
+        # neg_size = total_size - pos_size
+        x1 = self.avg_momentum1 * avg0 + F.gelu(x - avg0) # upmask * x self.up_relu_neg_momentum * x + avg0 +
+        # avg1 = x1.sum(avg_dims, keepdim=True) / pos_size
+        # x1_norm = self.norm_scale * torch.sqrt(pos_size / total_size) * F.layer_norm(x1 + avg1 * downmask, x1.shape[1:]) #
+        x1_norm = self.norm_scale * F.layer_norm(x1, x1.shape[1:])
         # 均值之下归一化
-        x2 = x_norm - x1
-        avg2 = x2.sum(avg_dims, keepdim=True) / neg_size
-        x2_norm = torch.sqrt(neg_size / total_size) * F.layer_norm(x2 + avg2.detach() * upmask, x2.shape[1:])
-        x1 = x1 + x1_norm # self.relu_neg_momentum1 * x_norm + self.short_cut * self.short_cut_coef1 *
-        x2 = x2 + x2_norm # self.short_cut * self.short_cut_coef2 *
-        return x_norm, x1, x2 # 0.5 * (self.norm_coef1 * x1_norm + self.norm_coef2 * x2_norm) + self.res_coef * x
-
-
-# class ReLUSplitNorm(nn.Module):
-#     def __init__(self, norm_scale, short_cut=None, relu_neg_momentum=0.):
-#         super(ReLUSplitNorm, self).__init__()
-#         self.short_cut = short_cut
-#         self.short_cut_coef1 = nn.Parameter(torch.tensor(1.))
-#         self.short_cut_coef2 = nn.Parameter(torch.tensor(1.))
-#         self.relu_neg_momentum1 = nn.Parameter(torch.tensor(relu_neg_momentum))
-#         self.relu_neg_momentum2 = nn.Parameter(torch.tensor(relu_neg_momentum))
-#         # self.avg_offset = nn.Parameter(torch.tensor(0.)) if avg_offset else None
-#         self.res_coef = nn.Parameter(torch.tensor(1.))
-#         self.norm_coef1 = nn.Parameter(torch.tensor(1.))
-#         self.norm_coef2 = nn.Parameter(torch.tensor(1.))
-#         self.norm_scale = norm_scale
-#
-#     def forward(self, x):
-#         avg_dims = list(range(1, x.dim()))
-#         total_size = x.numel() / x.size(0)
-#         # 均值之上归一化
-#         avg0 = x.mean(avg_dims, keepdim=True)
-#         x = x - avg0
-#         x1 = F.relu(x)
-#         downmask = (x1 == 0).type(torch.int).data
-#         neg_size = downmask.sum(avg_dims, keepdim=True)
-#         pos_size = total_size - neg_size
-#         avg1 = x1.mean(avg_dims, keepdim=True) / pos_size
-#         x1_norm = self.norm_scale * (x1 - avg1) # self.norm_scale *
-#         # 均值之下归一化
-#         x2 = x - x1
-#         avg2 = x2.sum(avg_dims, keepdim=True) / neg_size
-#         x2_norm = self.norm_scale * (x2 - avg2)
-#         return 0.5 * (self.norm_coef1 * x1 + self.norm_coef2 * x2), x1, x2, x1_norm, x2_norm # 0.9 * (self.norm_coef1 * x1_norm + self.norm_coef2 * x2_norm) +
+        x2 = self.avg_momentum2 * avg0 + F.gelu(avg0 - x) # + downmask * x self.down_relu_neg_momentum * x + avg0
+        # avg2 = x2.sum(avg_dims, keepdim=True) / neg_size
+        # x2_norm = self.norm_scale * torch.sqrt(neg_size / total_size) * F.layer_norm(x2 + avg2 * upmask, x2.shape[1:]) #
+        x2_norm = self.norm_scale * F.layer_norm(x2, x2.shape[1:])
+        x1 = 0.5 * self.up_norm_momentum * x1 + x1_norm # self.relu_neg_momentum1 * x_norm + self.short_cut * self.short_cut_coef1 *
+        x2 = 0.5 * self.down_norm_momentum * x2 + x2_norm # self.short_cut * self.short_cut_coef2 *
+        return x1, x2 # 0.5 * (self.norm_coef1 * x1_norm + self.norm_coef2 * x2_norm) + self.res_coef * x
 
 
 class AttnConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, norm_scale, hidden_kernels, attn_kernels):
+    def __init__(self, in_channels, out_channels, norm_scale, attn_kernels):
         super(AttnConv2d, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, hidden_kernels, padding=hidden_kernels // 2, bias=False)
-        self.conv2 = nn.Conv2d(in_channels, out_channels, hidden_kernels, padding=hidden_kernels // 2, bias=False)
-        self.conv3 = nn.Conv2d(in_channels, out_channels, hidden_kernels, padding=hidden_kernels // 2, bias=False)
-        self.unfold1 = nn.Unfold(attn_kernels, stride=attn_kernels)
-        self.unfold2 = nn.Unfold(attn_kernels, stride=attn_kernels)
-        self.unfold3 = nn.Unfold(attn_kernels, padding=attn_kernels // 2)
+        if in_channels != out_channels:
+            self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
+        else:
+            self.conv_momentum = nn.Parameter(torch.tensor(1.))
+        self.conv1 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.conv2 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.conv3 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.conv4 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.value_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
+        # self.value_conv1 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        # self.value_conv2 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.conv = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.xor_conv = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.pos_conv_kernels1 = nn.Parameter(nn.Conv2d(out_channels, out_channels, attn_kernels).weight.data.flatten(1))
+        self.pos_conv_kernels2 = nn.Parameter(nn.Conv2d(out_channels, out_channels, attn_kernels).weight.data.flatten(1))
+        # self.unfold1 = nn.Unfold(attn_kernels, stride=attn_kernels)
+        # self.unfold2 = nn.Unfold(attn_kernels, stride=attn_kernels)
+        self.unfold = nn.Unfold(attn_kernels, padding=attn_kernels // 2)
         self.attn_kernels = attn_kernels
         self.in_channels = in_channels
-        self.out_channels = out_channels
         self.softmax = nn.Softmax(2)
         self.norm_scale = norm_scale
+        # self.channel_attn = nn.Sequential(
+        #     nn.Conv2d(in_channels, out_channels, 1, padding=0, bias=False),
+        #     nn.Softmax(1),
+        # )
         # self.pos_code = nn.Parameter(torch.randn([in_channels] + image_size))
         # self.attn_weight = nn.Parameter(
         #     nn.Conv2d(in_channels, out_channels, attn_kernels, bias=False).weight.data.flatten(1))
 
-    def forward(self, x1, x2):
-        key = self.unfold1(self.conv1(x1))
-        key = key.unflatten(1, (-1, self.attn_kernels * self.attn_kernels)).transpose(1, 2)
-        query = self.unfold2(self.conv2(x2))
-        query = query.unflatten(1, (-1, self.attn_kernels * self.attn_kernels)).permute([0, 2, 3, 1])
-        attn_kernls = key.matmul(query).transpose(1, 3).flatten(2) / sqrt(self.out_channels * self.attn_kernels * self.attn_kernels)  # + self.attn_weight / self.attn_kernels
-        attn_kernls = self.softmax(attn_kernls)  # attn_kernls.transpose(1, 2).flatten(1, 2)
-        value = self.conv3(x1)
-        # value = self.norm_scale * F.layer_norm(value, value.shape[1:])
-        attn_value = attn_kernls.matmul(self.unfold3(value))
+    def generate_attn_kernels(self, x, key_conv, query_conv, attn_kernels, softmax=True):
+        flat_kernel_size = attn_kernels * attn_kernels
+        key = F.unfold(key_conv(x), attn_kernels, stride=attn_kernels)
+        key = key.unflatten(1, (-1, flat_kernel_size)).transpose(1, 2)
+        query = F.unfold(query_conv(x), attn_kernels, stride=attn_kernels)
+        query = query.unflatten(1, (-1, flat_kernel_size)).permute([0, 2, 3, 1])
+        attn_kernls = key.matmul(query).transpose(1, 3).flatten(2) / sqrt(self.in_channels * flat_kernel_size)
+        if softmax:
+            attn_kernls = self.softmax(attn_kernls)  # attn_kernls.transpose(1, 2).flatten(1, 2)
+        return attn_kernls
+
+    def forward(self, x):
+        attn_kernls1 = self.generate_attn_kernels(x, self.conv1, self.conv2, self.attn_kernels)
+        attn_kernls2 = self.generate_attn_kernels(x, self.conv3, self.conv4, self.attn_kernels, False)
+        attn_kernls = (attn_kernls1 + self.pos_conv_kernels1) * (attn_kernls2 + self.pos_conv_kernels2)
+        attn_value = attn_kernls.matmul(self.unfold(self.value_conv(x)))
         attn_value = attn_value.unflatten(2, (int(sqrt(attn_value.size(2))), -1))
-        return attn_value
+        attn_value = self.norm_scale * F.layer_norm(attn_value, attn_value.shape[1:])
+        x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
+        return x + attn_value
 
 
-class ButterflyGatingUnit(nn.Module):
-    def __init__(self, in_channels, norm_scale, kernels):
-        super(ButterflyGatingUnit, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
-        self.conv2  = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
-        self.attn_conv = AttnConv2d(in_channels, in_channels, norm_scale, kernels, kernels)
-        # self.full_conv = nn.Conv2d(in_channels * 2, in_channels, kernels, padding=kernels // 2, bias=False)
-        self.full_conv = nn.Conv2d(in_channels * 2, in_channels, 1)
-        self.relu_split_norm = ReLUSplitNorm(norm_scale, 1., 0.)
+class ResConv2d(nn.Module):
+    def __init__(self, in_channels, out_channels, norm_scale, kernels):
+        super(ResConv2d, self).__init__()
+        if in_channels != out_channels:
+            self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
+        else:
+            self.conv_momentum = nn.Parameter(torch.tensor(1.))
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.conv3 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.norm_scale = norm_scale
-        self.alpha1 = nn.Parameter(torch.tensor(1.))
-        self.alpha2 = nn.Parameter(torch.tensor(1.))
 
     def forward(self, x):
-        x, x1, x2 = self.relu_split_norm(x)
-        y1 = self.attn_conv(x1, x2)
-        # y1 = y1 - y1.mean([1, 2, 3], keepdim=True)
+        y1 = self.conv1(x)
         y1 = self.norm_scale * F.layer_norm(y1, y1.shape[1:])
-        y2 = self.conv2(x2)
-        y2 = self.norm_scale * F.layer_norm(y2, y2.shape[1:]) * x1
-        y = torch.cat([y1, y2], 1)
-        return x + self.full_conv(y)
+        y2 = self.conv2(x)
+        y2 = self.norm_scale * F.layer_norm(y2, y2.shape[1:])
+        y3 = self.conv3(x)
+        y3 = self.norm_scale * F.layer_norm(y3, y3.shape[1:])
+        x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
+        return x + y1 + y2 * y3
 
 
-class ButterflySpatialGatingUnit(nn.Module):
-    def __init__(self, in_channels, norm_scale, kernels):
-        super(ButterflySpatialGatingUnit, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
-        self.conv2  = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
-        self.full_conv = nn.Conv2d(in_channels * 2, in_channels, kernels, padding=kernels // 2, bias=False)
-        self.relu_split_norm = ReLUSplitNorm(norm_scale, 1., 0.)
-        self.norm_scale = norm_scale
-
-    def forward(self, x):
-        x, x1, x2 = self.relu_split_norm(x)
-        y1 = self.conv2(x2)
-        y2 = self.conv1(x1)
-        y1 = self.norm_scale * F.layer_norm(y1, y1.shape[1:]) * x1
-        y2 = self.norm_scale * F.layer_norm(y2, y2.shape[1:]) * x2
-        y = torch.cat([y1, y2], 1)
-        return x + self.full_conv(y)
+# class ButterflyGatingUnit(nn.Module):
+#     def __init__(self, in_channels, norm_scale, kernels):
+#         super(ButterflyGatingUnit, self).__init__()
+#         # self.conv1 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
+#         # self.conv2  = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
+#         self.conv1 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
+#         self.conv2 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
+#         self.attn_conv1 = AttnConv2d(in_channels, in_channels, norm_scale, kernels, kernels)
+#         self.attn_conv2 = AttnConv2d(in_channels, in_channels, norm_scale, kernels, kernels)
+#         # self.full_conv = nn.Conv2d(in_channels * 2, in_channels, kernels, padding=kernels // 2, bias=False)
+#         self.full_conv = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False) # nn.Conv2d(2 * in_channels, in_channels, 1)
+#         self.short_conv = nn.Conv2d(in_channels, in_channels, 1)
+#         self.relu_split_norm = ReLUSplitNorm(norm_scale, 1., 0.)
+#         self.norm_scale1 = nn.Parameter(torch.tensor(norm_scale))
+#         self.norm_scale2 = nn.Parameter(torch.tensor(norm_scale))
+#         self.norm_scale = norm_scale
+#         self.shortcut1 = nn.Parameter(torch.tensor(1.)) # nn.Parameter(torch.ones(in_channels, 1, 1)) # nn.Parameter(torch.tensor(1.))
+#         self.shortcut2 = nn.Parameter(torch.tensor(1.)) # nn.Parameter(torch.ones(in_channels, 1, 1)) # nn.Parameter(torch.tensor(1.))
+#
+#     def forward(self, x):
+#         x1, x2 = self.relu_split_norm(x)
+#         y1 = self.attn_conv1(x1 + x2)
+#         # y1 = y1 - y1.mean([1, 2, 3], keepdim=True)
+#         # y1 = self.norm_scale * F.layer_norm(y1, y1.shape[1:])
+#         # y2 =  self.attn_conv2(x2, x1) # self.conv2(x2)
+#         # y2 = self.norm_scale * F.layer_norm(y2, y2.shape[1:])
+#         # y3 = self.conv1(x1)
+#         # y3 = self.conv1(x1)
+#         # y2 = self.norm_scale * F.layer_norm(y2, y2.shape[1:]) * x1 + self.norm_scale * F.layer_norm(y3, y3.shape[1:]) * x2
+#         # y = torch.cat([y1, y2], 1)
+#         return x1 + x2 + y1 # self.full_conv(y1)
 
 
 # class ResConv2d(nn.Module):
@@ -287,8 +292,8 @@ class ButterflySpatialGatingUnit(nn.Module):
 #             self.num_heads = num_heads
 #         else:
 #             self.num_heads = (num_heads, num_heads)
-#         self.pre_relu_norm = PreReLUResBatchNorm2d(in_channels, norm_scale, False, 0.5, 0.)
-#         self.conv = ButterflyGatingUnit(image_size, in_channels, norm_scale, hidden_kernels, kernels)
+#         self.pre_relu_norm = ReLUSplitNorm(in_channels, norm_scale, False, 0.5, 0.)
+#         self.conv = ButterflyGatingUnit(in_channels, norm_scale, hidden_kernels, kernels)
 #         self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
 #         self.full_conv = nn.Conv2d(in_channels * 2, out_channels, kernels, padding=kernels // 2, bias=False)
 #         self.norm_scale = norm_scale
@@ -331,56 +336,41 @@ class ButterflySpatialGatingUnit(nn.Module):
 
 
 class MetaResConv2d(nn.Module):
-    def __init__(self, in_channels, norm_scale, kernel_size):
+    def __init__(self, in_channels, out_channels, norm_scale, kernel_size):
         super(MetaResConv2d, self).__init__()
-        # if in_channels != out_channels:
-        #     self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
-        # else:
-        #     self.conv_momentum = nn.Parameter(torch.tensor(1.))
-        # self.alpha = conv_momentum
         self.layer1 = nn.Sequential(
-            ButterflyGatingUnit(in_channels, norm_scale, kernel_size),
-            ButterflyGatingUnit(in_channels, norm_scale, kernel_size),
+            ReLUSplitNorm(norm_scale, 0.),
+            AttnConv2d(in_channels, out_channels, norm_scale, kernel_size),
         )
-        # self.layer2 = nn.Sequential(
-        #     # ResBatchNorm2d(in_channels, norm_scale, bias=False, short_cut=True),
-        #     # ResLayerNorm2d(image_size, norm_scale, bias=False, short_cut=True),
-        #     # ResReLU(relu_neg_momentum, reverse=True),
-        #     ResAttnConv2d(image_size, in_channels, out_channels, norm_scale, kernel_size, kernel_size, conv_momentum, num_heads=2,
-        #                batch_norm=True, xor=True),
-        #     # ResBatchNorm2d(out_channels, norm_scale, bias=False, short_cut=True),
-        #     ResConv2d(image_size, out_channels, out_channels, norm_scale, kernel_size, conv_momentum, num_heads=1, pre_norm=True, batch_norm=True,
-        #               xor=True),
-        #     ResReLU(relu_neg_momentum, reverse=True),
-        # )
-        # self.relu = ResReLU(relu_neg_momentum)
-        # self.drop_out = nn.Dropout()
+        self.relu_split_norm = ReLUSplitNorm(norm_scale, 0.)
+        self.attn_conv = AttnConv2d(in_channels, out_channels, norm_scale, kernel_size)
+        self.conv = ResConv2d(in_channels, out_channels, norm_scale, kernel_size)
 
     def forward(self, x):
-        # y = self.layer1(x) + self.layer2(x)
-        # x = self.alpha * self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
-        return self.layer1(x)
+        x1, x2 = self.relu_split_norm(x)
+        x1 = self.attn_conv(x1)
+        x2 = self.conv(x2)
+        return x1 + x2
 
 
 class MetaResNet(nn.Module):
     def __init__(self, num_layers, init_channels, kernel_size=3, norm_scale=0.1816, image_sizes=None, dropout=True):
         super(MetaResNet, self).__init__()
         num_hidden_layers = int(torch.tensor([i[1] for i in num_layers]).sum().item())
-        dropouts = [0.1816] * (len(num_layers) - 1) + [0.1816] if dropout else None
+        dropouts = [0.5] * (len(num_layers) - 1) + [0.5] if dropout else None
         alpha = 1. * torch.ones(num_hidden_layers)  # torch.sort(torch.cat([torch.full((1,), 1.), 0.905 + 0.09 * torch.rand(num_hidden_layers - 2), torch.full((1,), 0.9)]), descending=True).values #
         beta = 0. * torch.ones(num_hidden_layers + len(num_layers)) # torch.sort(torch.cat([torch.full((1,), 1.), 0.905 + 0.09 * torch.rand(num_hidden_layers + len(num_layers) - 3), torch.full((1,), 0.9)]), descending=True).values #
-        layers = [nn.Conv2d(init_channels, num_layers[0][0], 1),
-                  MetaResConv2d(num_layers[0][0], norm_scale, kernel_size)]
+        layers = [MetaResConv2d(init_channels, num_layers[0][0], norm_scale, kernel_size)]
         xor = True
         k = -1
         alpha_id, beta_id = 0, 1
         # prob = True
         for n, (i, j) in enumerate(num_layers):
             if k > 0 and k != i:
-                layers.append(nn.Conv2d(k, i, 1))
+                layers.append(MetaResConv2d(k, i, norm_scale, kernel_size))
                 beta_id += 1
             for id in range(j):
-                layers.append(MetaResConv2d(i, norm_scale, kernel_size)) # id % 2 == 1
+                layers.append(MetaResConv2d(i, i, norm_scale, kernel_size)) # id % 2 == 1
                 xor = ~xor
                 alpha_id += 1
                 beta_id += 1
