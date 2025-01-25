@@ -150,15 +150,15 @@ class ReLUSplitNorm(nn.Module):
         # total_size = x.numel() / x.size(0)
         # pos_size = upmask.sum(avg_dims, keepdim=True)
         # neg_size = total_size - pos_size
-        x1 = self.avg_momentum1 * avg0 + F.gelu(x - avg0) # upmask * x self.up_relu_neg_momentum * x + avg0 +
+        x1 = self.avg_momentum1 * avg0 + F.gelu(x - avg0) # + F.gelu(x - avg0) # upmask * x self.up_relu_neg_momentum * x + avg0 +
         # avg1 = x1.sum(avg_dims, keepdim=True) / pos_size
         # x1_norm = self.norm_scale * torch.sqrt(pos_size / total_size) * F.layer_norm(x1 + avg1 * downmask, x1.shape[1:]) #
-        x1_norm = self.norm_scale * F.layer_norm(x1, x1.shape[1:])
+        x1_norm =  self.norm_scale * (x1 - x1.mean()) / (x1.std(unbiased=False) + 1e-4) # self.norm_scale * F.layer_norm(x1, x1.shape[1:])
         # 均值之下归一化
-        x2 = self.avg_momentum2 * avg0 + F.gelu(avg0 - x) # + downmask * x self.down_relu_neg_momentum * x + avg0
+        x2 = self.avg_momentum2 * avg0 + F.gelu(avg0 - x) # + F.gelu(avg0 - x) # + downmask * x self.down_relu_neg_momentum * x + avg0
         # avg2 = x2.sum(avg_dims, keepdim=True) / neg_size
         # x2_norm = self.norm_scale * torch.sqrt(neg_size / total_size) * F.layer_norm(x2 + avg2 * upmask, x2.shape[1:]) #
-        x2_norm = self.norm_scale * F.layer_norm(x2, x2.shape[1:])
+        x2_norm = self.norm_scale * (x2 - x2.mean()) / (x2.std(unbiased=False) + 1e-4) # self.norm_scale * F.layer_norm(x2, x2.shape[1:])
         x1 = 0.5 * self.up_norm_momentum * x1 + x1_norm # self.relu_neg_momentum1 * x_norm + self.short_cut * self.short_cut_coef1 *
         x2 = 0.5 * self.down_norm_momentum * x2 + x2_norm # self.short_cut * self.short_cut_coef2 *
         return x1, x2 # 0.5 * (self.norm_coef1 * x1_norm + self.norm_coef2 * x2_norm) + self.res_coef * x
