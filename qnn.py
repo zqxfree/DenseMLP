@@ -120,26 +120,57 @@ class ResReLU(nn.Module):
 #         return y1, y2
 
 
+def huber_full_norm(x):
+    x = x - x.mean()
+    x_abs = x.abs()
+    lt1_mask = (x_abs < 0.1).data
+    if lt1_mask.all():
+        x_std = ((x ** 2).mean() + 1e-5).sqrt()
+    elif not lt1_mask.any():
+        x_std = x_abs.mean()
+    else:
+        lt1_mask = lt1_mask.type(torch.int)
+        gt1_mask = 1 - lt1_mask
+        lt1_num = lt1_mask.sum()
+        x_std2 = ((lt1_mask * x) ** 2).sum().sqrt() / sqrt(lt1_num)
+        x_std1 = (gt1_mask * x_abs).sum() / (x.numel() - lt1_num)
+        x_std = x_std1 + x_std2
+    return x / x_std
+
+
+class HuberLayerNorm(nn.Module):
+    def __init__(self, layer_dim=None):
+        super(HuberLayerNorm, self).__init__()
+        if layer_dim is None:
+            layer_dim = -1
+        self.layer_dim = layer_dim
+
+    def forward(self, x):
+        x = x - x.mean(self.layer_dim, keepdim=True)
+        x_abs = x.abs()
+        lt1_mask = (x_abs <= 1).data
+        if lt1_mask.all():
+            x_std = ((x ** 2).mean(self.layer_dim, keepdim=True) + 1e-5).sqrt()
+        elif not lt1_mask.any():
+            x_std = x_abs.mean(self.layer_dim, keepdim=True)
+        else:
+            lt1_mask = lt1_mask.type(torch.int)
+            gt1_mask = 1 - lt1_mask
+            lt1_num = lt1_mask.sum()
+            x_std2 = ((lt1_mask * x) ** 2).sum(self.layer_dim, keepdim=True).sqrt() / sqrt(lt1_num)
+            x_std1 = (gt1_mask * x_abs).sum(self.layer_dim, keepdim=True) / (x.numel() - lt1_num)
+            x_std = x_std1 + x_std2
+        return x / x_std
+
+
 class ReLUSplitNorm(nn.Module):
     def __init__(self, norm_scale, relu_neg_momentum=0.):
         super(ReLUSplitNorm, self).__init__()
-        self.up_norm_momentum = nn.Parameter(torch.tensor(1.))
-        self.down_norm_momentum = nn.Parameter(torch.tensor(1.))
-        self.avg_momentum1 = nn.Parameter(torch.tensor(1.))
-        self.avg_momentum2 = nn.Parameter(torch.tensor(1.))
-        self.up_relu_neg_momentum = nn.Parameter(torch.tensor(relu_neg_momentum))
-        self.down_relu_neg_momentum = nn.Parameter(torch.tensor(relu_neg_momentum))
-        # self.avg_offset = nn.Parameter(torch.tensor(0.)) if avg_offset else None
-        self.res_coef = nn.Parameter(torch.tensor(1.))
-        self.norm_coef1 = nn.Parameter(torch.tensor(0.9))
-        self.norm_coef2 = nn.Parameter(torch.tensor(0.9))
-        self.norm_scale1 = nn.Parameter(torch.tensor(norm_scale))
-        self.norm_scale2 = nn.Parameter(torch.tensor(norm_scale))
+        self.up_norm_momentum = nn.Parameter(torch.tensor(0.))
+        self.down_norm_momentum = nn.Parameter(torch.tensor(0.))
+        self.up_avg_momentum = nn.Parameter(torch.tensor(1.))
+        self.down_avg_momentum = nn.Parameter(torch.tensor(1.))
         self.norm_scale = norm_scale
-        # self.norm_shortcut1 = nn.Parameter(torch.tensor(1.))
-        # self.norm_shortcut2 = nn.Parameter(torch.tensor(1.))
-        self.alpha1 = nn.Parameter(torch.tensor(1.))
-        self.alpha2 = nn.Parameter(torch.tensor(1.))
 
     def forward(self, x):
         avg_dims = list(range(1, x.dim()))
@@ -150,17 +181,19 @@ class ReLUSplitNorm(nn.Module):
         # total_size = x.numel() / x.size(0)
         # pos_size = upmask.sum(avg_dims, keepdim=True)
         # neg_size = total_size - pos_size
-        x1 = self.avg_momentum1 * avg0 + F.gelu(x - avg0) # + F.gelu(x - avg0) # upmask * x self.up_relu_neg_momentum * x + avg0 +
+        x1 = self.up_avg_momentum * avg0 + F.gelu(x - avg0) # + F.gelu(x - avg0) # upmask * x self.up_relu_neg_momentum * x + avg0 +
         # avg1 = x1.sum(avg_dims, keepdim=True) / pos_size
         # x1_norm = self.norm_scale * torch.sqrt(pos_size / total_size) * F.layer_norm(x1 + avg1 * downmask, x1.shape[1:]) #
-        x1_norm =  self.norm_scale * (x1 - x1.mean()) / (x1.std(unbiased=False) + 1e-4) # self.norm_scale * F.layer_norm(x1, x1.shape[1:])
+        x1_norm =  self.norm_scale * (x1 - x1.mean()) / (x1.std(unbiased=False) + 1e-4) #  / ((x1 - x1.mean()).abs().mean() + 1e-4) # * huber_full_norm(x1) #  self.norm_scale * F.layer_norm(x1, x1.shape[1:])
         # 均值之下归一化
-        x2 = self.avg_momentum2 * avg0 + F.gelu(avg0 - x) # + F.gelu(avg0 - x) # + downmask * x self.down_relu_neg_momentum * x + avg0
+        x2 = self.down_avg_momentum * avg0 + F.gelu(avg0 - x) # + F.gelu(avg0 - x) # + downmask * x self.down_relu_neg_momentum * x + avg0
         # avg2 = x2.sum(avg_dims, keepdim=True) / neg_size
         # x2_norm = self.norm_scale * torch.sqrt(neg_size / total_size) * F.layer_norm(x2 + avg2 * upmask, x2.shape[1:]) #
-        x2_norm = self.norm_scale * (x2 - x2.mean()) / (x2.std(unbiased=False) + 1e-4) # self.norm_scale * F.layer_norm(x2, x2.shape[1:])
-        x1 = 0.5 * self.up_norm_momentum * x1 + x1_norm # self.relu_neg_momentum1 * x_norm + self.short_cut * self.short_cut_coef1 *
-        x2 = 0.5 * self.down_norm_momentum * x2 + x2_norm # self.short_cut * self.short_cut_coef2 *
+        x2_norm = self.norm_scale * (x2 - x2.mean()) / (x2.std(unbiased=False) + 1e-4) #  / ((x2 - x2.mean()).abs().mean() + 1e-4) # * huber_full_norm(x2) # self.norm_scale * F.layer_norm(x2, x2.shape[1:])
+        # x1 = self.up_norm_momentum * x1 + x1_norm
+        # x2 = self.down_norm_momentum * x2 + x2_norm
+        x1 = self.up_norm_momentum * x1 + x1_norm # 0.381966 * self.up_norm_momentum *
+        x2 = self.down_norm_momentum * x2 + x2_norm
         return x1, x2 # 0.5 * (self.norm_coef1 * x1_norm + self.norm_coef2 * x2_norm) + self.res_coef * x
 
 
@@ -175,6 +208,8 @@ class AttnConv2d(nn.Module):
         self.conv2 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
         self.conv3 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
         self.conv4 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.conv5 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.conv6 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
         self.value_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
         # self.value_conv1 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
         # self.value_conv2 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
@@ -182,6 +217,7 @@ class AttnConv2d(nn.Module):
         self.xor_conv = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
         self.pos_conv_kernels1 = nn.Parameter(nn.Conv2d(out_channels, out_channels, attn_kernels).weight.data.flatten(1))
         self.pos_conv_kernels2 = nn.Parameter(nn.Conv2d(out_channels, out_channels, attn_kernels).weight.data.flatten(1))
+        self.pos_conv_kernels3 = nn.Parameter(nn.Conv2d(out_channels, out_channels, attn_kernels).weight.data.flatten(1))
         # self.unfold1 = nn.Unfold(attn_kernels, stride=attn_kernels)
         # self.unfold2 = nn.Unfold(attn_kernels, stride=attn_kernels)
         self.unfold = nn.Unfold(attn_kernels, padding=attn_kernels // 2)
@@ -197,7 +233,7 @@ class AttnConv2d(nn.Module):
         # self.attn_weight = nn.Parameter(
         #     nn.Conv2d(in_channels, out_channels, attn_kernels, bias=False).weight.data.flatten(1))
 
-    def generate_attn_kernels(self, x, key_conv, query_conv, attn_kernels, softmax=True):
+    def generate_attn_kernels(self, x, key_conv, query_conv, attn_kernels, pos_conv_kernels, softmax=True):
         flat_kernel_size = attn_kernels * attn_kernels
         key = F.unfold(key_conv(x), attn_kernels, stride=attn_kernels)
         key = key.unflatten(1, (-1, flat_kernel_size)).transpose(1, 2)
@@ -206,17 +242,23 @@ class AttnConv2d(nn.Module):
         attn_kernls = key.matmul(query).transpose(1, 3).flatten(2) / sqrt(self.in_channels * flat_kernel_size)
         if softmax:
             attn_kernls = self.softmax(attn_kernls)  # attn_kernls.transpose(1, 2).flatten(1, 2)
-        return attn_kernls
-
-    def forward(self, x):
-        attn_kernls1 = self.generate_attn_kernels(x, self.conv1, self.conv2, self.attn_kernels)
-        attn_kernls2 = self.generate_attn_kernels(x, self.conv3, self.conv4, self.attn_kernels, False)
-        attn_kernls = (attn_kernls1 + self.pos_conv_kernels1) * (attn_kernls2 + self.pos_conv_kernels2)
+        attn_kernls = attn_kernls * pos_conv_kernels
         attn_value = attn_kernls.matmul(self.unfold(self.value_conv(x)))
         attn_value = attn_value.unflatten(2, (int(sqrt(attn_value.size(2))), -1))
         attn_value = self.norm_scale * F.layer_norm(attn_value, attn_value.shape[1:])
+        return attn_value
+
+    def forward(self, x):
+        attn_value1 = self.generate_attn_kernels(x, self.conv1, self.conv2, self.attn_kernels, self.pos_conv_kernels1)
+        attn_value2 = self.generate_attn_kernels(x, self.conv3, self.conv4, self.attn_kernels, self.pos_conv_kernels2)
+        attn_value3 = self.generate_attn_kernels(x, self.conv5, self.conv6, self.attn_kernels, self.pos_conv_kernels3)
+        # attn_kernls = (attn_kernls1 + self.pos_conv_kernels1) * (attn_kernls2 + self.pos_conv_kernels2)
+        # attn_value = attn_kernls.matmul(self.unfold(self.value_conv(x)))
+        # attn_value = attn_value.unflatten(2, (int(sqrt(attn_value.size(2))), -1))
+        # attn_value = self.norm_scale * F.layer_norm(attn_value, attn_value.shape[1:])
+        # attn_value = self.norm_scale * (attn_value - attn_value.mean()) / (attn_value.std(unbiased=False) + 1e-4)
         x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
-        return x + attn_value
+        return x + attn_value1 + attn_value2 * attn_value3
 
 
 class ResConv2d(nn.Module):
@@ -229,15 +271,22 @@ class ResConv2d(nn.Module):
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.conv3 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.norm = HuberLayerNorm([1, 2, 3])
         self.norm_scale = norm_scale
 
     def forward(self, x):
         y1 = self.conv1(x)
-        y1 = self.norm_scale * F.layer_norm(y1, y1.shape[1:])
         y2 = self.conv2(x)
-        y2 = self.norm_scale * F.layer_norm(y2, y2.shape[1:])
         y3 = self.conv3(x)
+        y1 = self.norm_scale * F.layer_norm(y1, y1.shape[1:])
+        y2 = self.norm_scale * F.layer_norm(y2, y2.shape[1:])
         y3 = self.norm_scale * F.layer_norm(y3, y3.shape[1:])
+        # y1 = self.norm_scale * self.norm(y1)
+        # y2 = self.norm_scale * self.norm(y2)
+        # y3 = self.norm_scale * self.norm(y3)
+        # y1 = self.norm_scale * (y1 - y1.mean()) / (y1.std(unbiased=False) + 1e-4)
+        # y2 = self.norm_scale * (y2 - y2.mean()) / (y2.std(unbiased=False) + 1e-4)
+        # y3 = self.norm_scale * (y3 - y3.mean()) / (y3.std(unbiased=False) + 1e-4)
         x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
         return x + y1 + y2 * y3
 
@@ -338,18 +387,16 @@ class ResConv2d(nn.Module):
 class MetaResConv2d(nn.Module):
     def __init__(self, in_channels, out_channels, norm_scale, kernel_size):
         super(MetaResConv2d, self).__init__()
-        self.layer1 = nn.Sequential(
-            ReLUSplitNorm(norm_scale, 0.),
-            AttnConv2d(in_channels, out_channels, norm_scale, kernel_size),
-        )
         self.relu_split_norm = ReLUSplitNorm(norm_scale, 0.)
-        self.attn_conv = AttnConv2d(in_channels, out_channels, norm_scale, kernel_size)
+        # self.attn_conv = AttnConv2d(in_channels, out_channels, norm_scale, kernel_size)
+        # self.attn_conv2 = AttnConv2d(in_channels, out_channels, norm_scale, kernel_size)
         self.conv = ResConv2d(in_channels, out_channels, norm_scale, kernel_size)
+        self.conv2 = ResConv2d(in_channels, out_channels, norm_scale, kernel_size)
 
     def forward(self, x):
         x1, x2 = self.relu_split_norm(x)
-        x1 = self.attn_conv(x1)
-        x2 = self.conv(x2)
+        x1 = self.conv(x1)
+        x2 = self.conv2(x2)
         return x1 + x2
 
 

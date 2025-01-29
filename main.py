@@ -413,11 +413,11 @@ batch_size = 100
 # ).cuda()
 model = nn.Sequential(
     # MetaResNet([[64, 2], [128, 2], [128, 4]], 1, 5, norm_scale=0.1816, image_sizes=[28, 28], dropout=False),
-    MetaResNet([[32, 2], [64, 2], [64, 4]], 1, 3, norm_scale=0.1816, image_sizes=[28, 28], dropout=False),
+    MetaResNet([[64, 2], [128, 2], [128, 4]], 1, 3, norm_scale=0.1816, image_sizes=[28, 28], dropout=False),
     # ResBatchNorm2d(512),
     # nn.Conv2d(512, 10, 2),
     nn.Flatten(1),
-    nn.Linear(64 * 3 * 3, 10),
+    nn.Linear(128 * 3 * 3, 10),
 ).cuda()
 # model = AutoEncoder(128, 128, 128).cuda()
 optimizer = torch.optim.Adam(model.parameters())
@@ -526,7 +526,7 @@ def print_res_prob():
     k = 1
     c = 0
     for i, j in model.named_parameters():
-        if 'norm_momentum' in i and c == 0:
+        if 'normddd_momentum' in i and c == 0:
             print('norm_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
         elif 'conv_momentum' in i and c == 0:
             if j.data.numel() == 1:
@@ -536,8 +536,16 @@ def print_res_prob():
             else:
                 print('conv_momentum{}: {}'.format(k, round(j.data.abs().max().item(), 4)), end=' ')
             c += 1
-        elif 'relu_neg_momentum' in i and c == 1:
-            print('relu_neg_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        elif 'up_norm_momentum' in i and c == 1:
+            print('up_norm_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        elif 'down_norm_momentum' in i and c == 1:
+            print('down_norm_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        elif 'up_avg_momentum' in i and c == 1:
+            print('up_avg_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        elif 'down_avg_momentum' in i and c == 1:
+            print('down_avg_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        # elif 'relu_neg_momentum' in i and c == 1:
+        #     print('relu_neg_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
             print()
             k += 1
             c = 0
