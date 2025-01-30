@@ -198,19 +198,17 @@ class ReLUSplitNorm(nn.Module):
 
 
 class AttnConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, norm_scale, attn_kernels):
+    def __init__(self, in_channels, out_channels, attn_kernels, norm_scale):
         super(AttnConv2d, self).__init__()
         if in_channels != out_channels:
             self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
         else:
             self.conv_momentum = nn.Parameter(torch.tensor(1.))
-        self.conv1 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
-        self.conv2 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
-        self.conv3 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
-        self.conv4 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
-        self.conv5 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
-        self.conv6 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
-        self.value_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
+        self.key_conv = nn.Conv2d(in_channels, in_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.query_conv = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        # self.conv5 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        # self.conv6 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        # self.value_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
         # self.value_conv1 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
         # self.value_conv2 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
         self.conv = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
@@ -221,7 +219,7 @@ class AttnConv2d(nn.Module):
         # self.unfold1 = nn.Unfold(attn_kernels, stride=attn_kernels)
         # self.unfold2 = nn.Unfold(attn_kernels, stride=attn_kernels)
         self.unfold = nn.Unfold(attn_kernels, padding=attn_kernels // 2)
-        self.attn_kernels = attn_kernels
+        self.attn_kernel_size = attn_kernels
         self.in_channels = in_channels
         self.softmax = nn.Softmax(2)
         self.norm_scale = norm_scale
@@ -233,32 +231,39 @@ class AttnConv2d(nn.Module):
         # self.attn_weight = nn.Parameter(
         #     nn.Conv2d(in_channels, out_channels, attn_kernels, bias=False).weight.data.flatten(1))
 
-    def generate_attn_kernels(self, x, key_conv, query_conv, attn_kernels, pos_conv_kernels, softmax=True):
-        flat_kernel_size = attn_kernels * attn_kernels
-        key = F.unfold(key_conv(x), attn_kernels, stride=attn_kernels)
+    # def generate_attn_kernels(self, x1, x2, key_conv, query_conv, attn_kernels, pos_conv_kernels=None, softmax=False):
+    #     flat_kernel_size = attn_kernels * attn_kernels
+    #     key = F.unfold(key_conv(x1), attn_kernels, stride=attn_kernels)
+    #     key = key.unflatten(1, (-1, flat_kernel_size)).transpose(1, 2)
+    #     query = F.unfold(query_conv(x2), attn_kernels, stride=attn_kernels)
+    #     query = query.unflatten(1, (-1, flat_kernel_size)).permute([0, 2, 3, 1])
+    #     attn_kernls = key.matmul(query).transpose(1, 3).flatten(2) # / sqrt(self.in_channels * flat_kernel_size)
+    #     attn_kernls = self.norm_scale * F.layer_norm(attn_kernls, attn_kernls.shape[1:])
+    #     if softmax:
+    #         attn_kernls = self.softmax(attn_kernls)  # attn_kernls.transpose(1, 2).flatten(1, 2)
+    #     if pos_conv_kernels is not None:
+    #         attn_kernls = attn_kernls * pos_conv_kernels
+    #     attn_value = attn_kernls.matmul(self.unfold(x1))
+    #     attn_value = attn_value.unflatten(2, (int(sqrt(attn_value.size(2))), -1))
+    #     attn_value = self.norm_scale * F.layer_norm(attn_value, attn_value.shape[1:])
+    #     return attn_value
+
+    def forward(self, x1, x2):
+        flat_kernel_size = self.attn_kernel_size * self.attn_kernel_size
+        key = F.unfold(self.key_conv(x1), self.attn_kernel_size, stride=self.attn_kernel_size)
         key = key.unflatten(1, (-1, flat_kernel_size)).transpose(1, 2)
-        query = F.unfold(query_conv(x), attn_kernels, stride=attn_kernels)
+        query = F.unfold(self.query_conv(x2), self.attn_kernel_size, stride=self.attn_kernel_size)
         query = query.unflatten(1, (-1, flat_kernel_size)).permute([0, 2, 3, 1])
-        attn_kernls = key.matmul(query).transpose(1, 3).flatten(2) / sqrt(self.in_channels * flat_kernel_size)
-        if softmax:
-            attn_kernls = self.softmax(attn_kernls)  # attn_kernls.transpose(1, 2).flatten(1, 2)
-        attn_kernls = attn_kernls * pos_conv_kernels
-        attn_value = attn_kernls.matmul(self.unfold(self.value_conv(x)))
+        attn_kernls = key.matmul(query).transpose(1, 3).flatten(2)  # / sqrt(self.in_channels * flat_kernel_size)
+        attn_kernls = self.norm_scale * F.layer_norm(attn_kernls, attn_kernls.shape[1:])
+        # if self.softmax:
+        #     attn_kernls = self.softmax(attn_kernls)  # attn_kernls.transpose(1, 2).flatten(1, 2)
+        # if self.pos_conv_kernels is not None:
+        #     attn_kernls = attn_kernls * self.pos_conv_kernels
+        attn_value = attn_kernls.matmul(self.unfold(x1))
         attn_value = attn_value.unflatten(2, (int(sqrt(attn_value.size(2))), -1))
         attn_value = self.norm_scale * F.layer_norm(attn_value, attn_value.shape[1:])
         return attn_value
-
-    def forward(self, x):
-        attn_value1 = self.generate_attn_kernels(x, self.conv1, self.conv2, self.attn_kernels, self.pos_conv_kernels1)
-        attn_value2 = self.generate_attn_kernels(x, self.conv3, self.conv4, self.attn_kernels, self.pos_conv_kernels2)
-        attn_value3 = self.generate_attn_kernels(x, self.conv5, self.conv6, self.attn_kernels, self.pos_conv_kernels3)
-        # attn_kernls = (attn_kernls1 + self.pos_conv_kernels1) * (attn_kernls2 + self.pos_conv_kernels2)
-        # attn_value = attn_kernls.matmul(self.unfold(self.value_conv(x)))
-        # attn_value = attn_value.unflatten(2, (int(sqrt(attn_value.size(2))), -1))
-        # attn_value = self.norm_scale * F.layer_norm(attn_value, attn_value.shape[1:])
-        # attn_value = self.norm_scale * (attn_value - attn_value.mean()) / (attn_value.std(unbiased=False) + 1e-4)
-        x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
-        return x + attn_value1 + attn_value2 * attn_value3
 
 
 class ResConv2d(nn.Module):
@@ -271,24 +276,27 @@ class ResConv2d(nn.Module):
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.conv3 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.conv4 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.norm = HuberLayerNorm([1, 2, 3])
         self.norm_scale = norm_scale
 
-    def forward(self, x):
-        y1 = self.conv1(x)
-        y2 = self.conv2(x)
-        y3 = self.conv3(x)
+    def forward(self, x1, x2):
+        y1 = self.conv1(x1)
+        y2 = self.conv2(x1)
+        y3 = self.conv3(x1)
+        y4 = self.conv4(x2)
         y1 = self.norm_scale * F.layer_norm(y1, y1.shape[1:])
         y2 = self.norm_scale * F.layer_norm(y2, y2.shape[1:])
         y3 = self.norm_scale * F.layer_norm(y3, y3.shape[1:])
+        y4 = self.norm_scale * F.layer_norm(y4, y4.shape[1:])
         # y1 = self.norm_scale * self.norm(y1)
         # y2 = self.norm_scale * self.norm(y2)
         # y3 = self.norm_scale * self.norm(y3)
         # y1 = self.norm_scale * (y1 - y1.mean()) / (y1.std(unbiased=False) + 1e-4)
         # y2 = self.norm_scale * (y2 - y2.mean()) / (y2.std(unbiased=False) + 1e-4)
         # y3 = self.norm_scale * (y3 - y3.mean()) / (y3.std(unbiased=False) + 1e-4)
-        x = self.conv_momentum * x if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
-        return x + y1 + y2 * y3
+        x = self.conv_momentum * x1 if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x1)
+        return x + y1 + y2 * (y3 + y4)
 
 
 # class ButterflyGatingUnit(nn.Module):
@@ -390,14 +398,14 @@ class MetaResConv2d(nn.Module):
         self.relu_split_norm = ReLUSplitNorm(norm_scale, 0.)
         # self.attn_conv = AttnConv2d(in_channels, out_channels, norm_scale, kernel_size)
         # self.attn_conv2 = AttnConv2d(in_channels, out_channels, norm_scale, kernel_size)
-        self.conv = ResConv2d(in_channels, out_channels, norm_scale, kernel_size)
+        self.conv1 = ResConv2d(in_channels, out_channels, norm_scale, kernel_size)
         self.conv2 = ResConv2d(in_channels, out_channels, norm_scale, kernel_size)
 
     def forward(self, x):
         x1, x2 = self.relu_split_norm(x)
-        x1 = self.conv(x1)
-        x2 = self.conv2(x2)
-        return x1 + x2
+        y1 = self.conv1(x1, x2)
+        y2 = self.conv2(x2, x1)
+        return y1 + y2
 
 
 class MetaResNet(nn.Module):
