@@ -2,6 +2,7 @@ from math import sqrt, log, ceil, pi, inf, nan
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sympy.polys.polyconfig import query
 
 
 class Flipout(nn.Module):
@@ -164,18 +165,18 @@ class HuberLayerNorm(nn.Module):
 
 
 class ReLUSplitNorm(nn.Module):
-    def __init__(self, norm_scale, relu_neg_momentum=0.):
+    def __init__(self, in_channel, norm_scale):
         super(ReLUSplitNorm, self).__init__()
-        self.up_norm_momentum = nn.Parameter(torch.tensor(0.))
-        self.down_norm_momentum = nn.Parameter(torch.tensor(0.))
-        self.up_avg_momentum = nn.Parameter(torch.tensor(1.))
-        self.down_avg_momentum = nn.Parameter(torch.tensor(1.))
+        self.up_norm_momentum = nn.Parameter(torch.tensor(0.)) # nn.Parameter(torch.zeros(in_channel, 1, 1)) #
+        self.down_norm_momentum = nn.Parameter(torch.tensor(0.)) # nn.Parameter(torch.zeros(in_channel, 1, 1)) # nn.Parameter(torch.tensor(0.))
+        self.up_avg_momentum = nn.Parameter(torch.tensor(1.)) # nn.Parameter(torch.ones(in_channel, 1, 1)) # nn.Parameter(torch.tensor(1.))
+        self.down_avg_momentum = nn.Parameter(torch.tensor(1.)) # nn.Parameter(torch.ones(in_channel, 1, 1)) # nn.Parameter(torch.tensor(1.))
         self.norm_scale = norm_scale
 
     def forward(self, x):
         avg_dims = list(range(1, x.dim()))
         # 均值之上归一化
-        avg0 = x.mean() # x.mean(avg_dims, keepdim=True)
+        avg0 = x.mean() # [0, 2, 3], keepdim=True
         # upmask = (x > avg0).type(torch.int).data
         # downmask = 1 - upmask
         # total_size = x.numel() / x.size(0)
@@ -184,12 +185,12 @@ class ReLUSplitNorm(nn.Module):
         x1 = self.up_avg_momentum * avg0 + F.gelu(x - avg0) # + F.gelu(x - avg0) # upmask * x self.up_relu_neg_momentum * x + avg0 +
         # avg1 = x1.sum(avg_dims, keepdim=True) / pos_size
         # x1_norm = self.norm_scale * torch.sqrt(pos_size / total_size) * F.layer_norm(x1 + avg1 * downmask, x1.shape[1:]) #
-        x1_norm =  self.norm_scale * (x1 - x1.mean()) / (x1.std(unbiased=False) + 1e-4) #  / ((x1 - x1.mean()).abs().mean() + 1e-4) # * huber_full_norm(x1) #  self.norm_scale * F.layer_norm(x1, x1.shape[1:])
+        x1_norm = self.norm_scale * (x1 - x1.mean()) / (x1.std() + 1e-4) # [0, 2, 3], keepdim=True, unbiased=False / ((x1 - x1.mean()).abs().mean() + 1e-4) # * huber_full_norm(x1) #  self.norm_scale * F.layer_norm(x1, x1.shape[1:])
         # 均值之下归一化
-        x2 = self.down_avg_momentum * avg0 + F.gelu(avg0 - x) # + F.gelu(avg0 - x) # + downmask * x self.down_relu_neg_momentum * x + avg0
+        x2 = -self.down_avg_momentum * avg0 + F.gelu(avg0 - x) # + F.gelu(avg0 - x) # + downmask * x self.down_relu_neg_momentum * x + avg0
         # avg2 = x2.sum(avg_dims, keepdim=True) / neg_size
         # x2_norm = self.norm_scale * torch.sqrt(neg_size / total_size) * F.layer_norm(x2 + avg2 * upmask, x2.shape[1:]) #
-        x2_norm = self.norm_scale * (x2 - x2.mean()) / (x2.std(unbiased=False) + 1e-4) #  / ((x2 - x2.mean()).abs().mean() + 1e-4) # * huber_full_norm(x2) # self.norm_scale * F.layer_norm(x2, x2.shape[1:])
+        x2_norm = self.norm_scale * (x2 - x2.mean()) / (x2.std() + 1e-4) #  / ((x2 - x2.mean()).abs().mean() + 1e-4) # * huber_full_norm(x2) # self.norm_scale * F.layer_norm(x2, x2.shape[1:])
         # x1 = self.up_norm_momentum * x1 + x1_norm
         # x2 = self.down_norm_momentum * x2 + x2_norm
         x1 = self.up_norm_momentum * x1 + x1_norm # 0.381966 * self.up_norm_momentum *
@@ -204,8 +205,10 @@ class AttnConv2d(nn.Module):
             self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
         else:
             self.conv_momentum = nn.Parameter(torch.tensor(1.))
-        self.key_conv = nn.Conv2d(in_channels, in_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
-        self.query_conv = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.key_conv1 = nn.Conv2d(in_channels, in_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.key_conv2 = nn.Conv2d(in_channels, in_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.query_conv1 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
+        self.query_conv2 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
         # self.conv5 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
         # self.conv6 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
         # self.value_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False)
@@ -213,8 +216,8 @@ class AttnConv2d(nn.Module):
         # self.value_conv2 = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
         self.conv = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
         self.xor_conv = nn.Conv2d(in_channels, out_channels, attn_kernels, padding=attn_kernels // 2, bias=False)
-        # self.pos_conv_kernels = nn.Parameter(nn.Conv2d(in_channels, out_channels, attn_kernels).weight.data.flatten(1))
-        self.pos_conv_kernels2 = nn.Parameter(nn.Conv2d(out_channels, out_channels, attn_kernels).weight.data.flatten(1))
+        self.pos_conv_kernels1 = nn.Parameter(nn.Conv2d(in_channels, out_channels, attn_kernels).weight.data.flatten(1))
+        self.pos_conv_kernels2 = nn.Parameter(nn.Conv2d(in_channels, out_channels, attn_kernels).weight.data.flatten(1))
         self.pos_conv_kernels3 = nn.Parameter(nn.Conv2d(out_channels, out_channels, attn_kernels).weight.data.flatten(1))
         # self.unfold1 = nn.Unfold(attn_kernels, stride=attn_kernels)
         # self.unfold2 = nn.Unfold(attn_kernels, stride=attn_kernels)
@@ -251,11 +254,15 @@ class AttnConv2d(nn.Module):
 
     def forward(self, x1, x2):
         flat_kernel_size = self.attn_kernel_size * self.attn_kernel_size
-        key = F.unfold(self.key_conv(x1), self.attn_kernel_size, stride=self.attn_kernel_size)
-        key = key.unflatten(1, (-1, flat_kernel_size)).transpose(1, 2)
-        query = F.unfold(self.query_conv(x2), self.attn_kernel_size, stride=self.attn_kernel_size)
-        query = query.unflatten(1, (-1, flat_kernel_size)).permute([0, 2, 3, 1])
-        attn_kernls = key.matmul(query).transpose(1, 3).flatten(2) #  / sqrt(self.in_channels * flat_kernel_size)
+        key1 = F.unfold(self.key_conv1(x1), self.attn_kernel_size, stride=self.attn_kernel_size)
+        key1 = key1.unflatten(1, (-1, flat_kernel_size)).transpose(1, 2)
+        # key2 = F.unfold(self.key_conv1(x1), self.attn_kernel_size, stride=self.attn_kernel_size)
+        # key2 = key2.unflatten(1, (-1, flat_kernel_size)).transpose(1, 2)
+        query1 = F.unfold(self.query_conv1(x1), self.attn_kernel_size, stride=self.attn_kernel_size).unflatten(1, (-1, flat_kernel_size)).permute([0, 2, 3, 1])
+        query2 = F.unfold(self.query_conv2(x2), self.attn_kernel_size, stride=self.attn_kernel_size).unflatten(1, (-1, flat_kernel_size)).permute([0, 2, 3, 1])
+        attn_kernls1 = key1.matmul(query1).transpose(1, 3).flatten(2) #  / sqrt(self.in_channels * flat_kernel_size)
+        attn_kernls2 = key1.matmul(query2).transpose(1, 3).flatten(2)
+        attn_kernls = (attn_kernls1 + self.pos_conv_kernels1) * (attn_kernls2 + self.pos_conv_kernels2)
         attn_kernls = self.kernel_momentum * attn_kernls + self.norm_scale * (attn_kernls - attn_kernls.mean()) / (attn_kernls.std() + 1e-4) # self.norm_scale * F.layer_norm(attn_kernls, attn_kernls.shape[1:]) #
         # if self.softmax:
         #     attn_kernls = self.softmax(attn_kernls)  # attn_kernls.transpose(1, 2).flatten(1, 2)
@@ -267,150 +274,156 @@ class AttnConv2d(nn.Module):
         return attn_value
 
 
-class ResConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, norm_scale, kernels, attn=False):
-        super(ResConv2d, self).__init__()
-        if in_channels != out_channels:
-            self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
-        else:
-            self.conv_momentum = nn.Parameter(torch.tensor(1.))
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False) if not attn else AttnConv2d(in_channels, out_channels, kernels, norm_scale)
-        self.conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
-        self.conv3 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False) # AttnConv2d(in_channels, out_channels, kernels, norm_scale)
-        self.conv4 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
-        # self.conv5 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
-        self.norm = HuberLayerNorm([1, 2, 3])
+class ButterflyAttention(nn.Module):
+    def __init__(self, in_channels, out_channels, norm_scale, kernels):
+        super(ButterflyAttention, self).__init__()
+        self.attn_conv1 = AttnConv2d(in_channels, out_channels, kernels, norm_scale)
+        # self.attn_conv2 = AttnConv2d(in_channels, out_channels, kernels, norm_scale)
         self.norm_scale = norm_scale
-        self.attn = attn
 
     def forward(self, x1, x2):
-        y1 = self.conv1(x1) if not self.attn else self.conv1(x1, x2)
-        y2 = self.conv2(x1)
-        y3 = self.conv3(x1) # self.conv3(x1, x2)
-        y4 = self.conv4(x2)
-        # y5 = self.conv5(x2)
-        y1 = self.norm_scale * (F.layer_norm(y1, y1.shape[1:]) if not self.attn else (y1 - y1.mean()) / (y1.std() + 1e-4))
+        y1 = self.attn_conv1(x1, x2)
+        y1 = self.norm_scale * ((y1 - y1.mean()) / (y1.std() + 1e-4))
+        return y1
+
+
+class ButterflyConv2d(nn.Module):
+    def __init__(self, in_channels, out_channels, norm_scale, kernels, cross_xor=False):
+        super(ButterflyConv2d, self).__init__()
+        self.xor_conv1 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.xor_conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.xor_conv3 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.xor_conv4 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.proj1 = nn.Conv2d(in_channels, in_channels, 1, bias=False)
+        self.proj2 = nn.Conv2d(in_channels, out_channels, 1, bias=False) # nn.Linear(in_channels, out_channels, bias=False)
+        self.affine_conv = nn.Parameter(nn.Conv2d(in_channels, out_channels, kernels).weight)
+        self.affine_bias = nn.Parameter(nn.Conv2d(in_channels, out_channels, kernels).weight)
+        self.kernel_momentum = nn.Parameter(torch.tensor(0.))
+        self.norm = HuberLayerNorm([1, 2, 3])
+        self.norm_scale = norm_scale
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernels = kernels
+        self.cross_xor = cross_xor
+
+    def batch_norm(self, x):
+        # x = x.transpose(0, 1)
+        x = self.norm_scale * F.layer_norm(x, x.shape[1:])
+        # x = x.transpose(0, 1)
+        return x
+
+    def cross_attn(self, x1, x2):
+        attn1 = self.proj1(x1)
+        attn2 = self.proj2(x2)
+        # attn2 = self.proj2(attn2.transpose(1, 2)).unsqueeze(-2)
+        attn_kernels = attn1.unsqueeze(1) * attn2.unsqueeze(2)
+        pad_num = attn_kernels.size(-1) % self.kernels
+        if pad_num != 0:
+            pad_num = self.kernels - pad_num
+            attn_kernels = F.pad(attn_kernels, [0, pad_num, 0, pad_num])
+        attn_kernels = attn_kernels.view(attn_kernels.shape[:3] + (self.kernels, self.kernels, -1)).mean([0, -1])
+        attn_kernels = self.kernel_momentum * attn_kernels + self.norm_scale * (attn_kernels - attn_kernels.mean()) / (attn_kernels.std() + 1e-4)
+        attn_kernels = self.affine_conv * attn_kernels + self.affine_bias
+        attn_value = F.conv2d(x1, attn_kernels, padding=self.kernels // 2)
+        return attn_value
+
+    def forward(self, x1, x2):
+        attn_value = self.cross_attn(x1, x2)
+        attn_value = self.norm_scale * ((attn_value - attn_value.mean()) / (attn_value.std() + 1e-4))
+        y1 = self.xor_conv1(x1)
+        y2 = self.xor_conv2(x1)
+        y1 = self.norm_scale * F.layer_norm(y1, y1.shape[1:])
         y2 = self.norm_scale * F.layer_norm(y2, y2.shape[1:])
-        y3 = self.norm_scale * F.layer_norm(y3, y3.shape[1:])
-        y4 = self.norm_scale * F.layer_norm(y4, y4.shape[1:])
-        # y5 = self.norm_scale * F.layer_norm(y5, y5.shape[1:])
-        # y1 = self.norm_scale * self.norm(y1)
-        # y2 = self.norm_scale * self.norm(y2)
-        # y3 = self.norm_scale * self.norm(y3)
-        # y1 = self.norm_scale * (y1 - y1.mean()) / (y1.std(unbiased=False) + 1e-4)
-        # y2 = self.norm_scale * (y2 - y2.mean()) / (y2.std(unbiased=False) + 1e-4)
-        # y3 = self.norm_scale * (y3 - y3.mean()) / (y3.std(unbiased=False) + 1e-4)
-        x = self.conv_momentum * x1 if type(self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x1)
-        return x + y1 + y2 * (y3 + y4)
+        y = attn_value + y1 * y2
+        if self.cross_xor:
+            y3 = self.xor_conv3(x1)
+            y4 = self.xor_conv4(x2)
+            y3 = self.norm_scale * F.layer_norm(y3, y3.shape[1:])
+            y4 = self.norm_scale * F.layer_norm(y4, y4.shape[1:])
+            y = y + y3 * y4
+        return y
 
 
-# class ButterflyGatingUnit(nn.Module):
-#     def __init__(self, in_channels, norm_scale, kernels):
-#         super(ButterflyGatingUnit, self).__init__()
-#         # self.conv1 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
-#         # self.conv2  = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
-#         self.conv1 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
-#         self.conv2 = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False)
-#         self.attn_conv1 = AttnConv2d(in_channels, in_channels, norm_scale, kernels, kernels)
-#         self.attn_conv2 = AttnConv2d(in_channels, in_channels, norm_scale, kernels, kernels)
-#         # self.full_conv = nn.Conv2d(in_channels * 2, in_channels, kernels, padding=kernels // 2, bias=False)
-#         self.full_conv = nn.Conv2d(in_channels, in_channels, kernels, padding=kernels // 2, bias=False) # nn.Conv2d(2 * in_channels, in_channels, 1)
-#         self.short_conv = nn.Conv2d(in_channels, in_channels, 1)
-#         self.relu_split_norm = ReLUSplitNorm(norm_scale, 1., 0.)
-#         self.norm_scale1 = nn.Parameter(torch.tensor(norm_scale))
-#         self.norm_scale2 = nn.Parameter(torch.tensor(norm_scale))
-#         self.norm_scale = norm_scale
-#         self.shortcut1 = nn.Parameter(torch.tensor(1.)) # nn.Parameter(torch.ones(in_channels, 1, 1)) # nn.Parameter(torch.tensor(1.))
-#         self.shortcut2 = nn.Parameter(torch.tensor(1.)) # nn.Parameter(torch.ones(in_channels, 1, 1)) # nn.Parameter(torch.tensor(1.))
-#
-#     def forward(self, x):
-#         x1, x2 = self.relu_split_norm(x)
-#         y1 = self.attn_conv1(x1 + x2)
-#         # y1 = y1 - y1.mean([1, 2, 3], keepdim=True)
-#         # y1 = self.norm_scale * F.layer_norm(y1, y1.shape[1:])
-#         # y2 =  self.attn_conv2(x2, x1) # self.conv2(x2)
-#         # y2 = self.norm_scale * F.layer_norm(y2, y2.shape[1:])
-#         # y3 = self.conv1(x1)
-#         # y3 = self.conv1(x1)
-#         # y2 = self.norm_scale * F.layer_norm(y2, y2.shape[1:]) * x1 + self.norm_scale * F.layer_norm(y3, y3.shape[1:]) * x2
-#         # y = torch.cat([y1, y2], 1)
-#         return x1 + x2 + y1 # self.full_conv(y1)
+class XorConv2d(nn.Module):
+    def __init__(self, in_channels, out_channels, norm_scale, kernels):
+        super(XorConv2d, self).__init__()
+        self.xor_conv1 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.xor_conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.xor_conv3 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.xor_conv4 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.xor_conv5 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.xor_conv6 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.norm = HuberLayerNorm([1, 2, 3])
+        self.norm_scale = norm_scale
+        self.kernels = kernels
+        self.conv_momentum1 = nn.Parameter(torch.tensor(0.))
+        self.conv_momentum2 = nn.Parameter(torch.tensor(0.))
+        self.xor_momentum1 = nn.Parameter(torch.tensor(0.))
+        self.xor_momentum2 = nn.Parameter(torch.tensor(0.))
+        self.xor_momentum3 = nn.Parameter(torch.tensor(0.))
+        self.xor_momentum4 = nn.Parameter(torch.tensor(0.))
+        self.xor_momentum5 = nn.Parameter(torch.tensor(0.))
+        self.xor_momentum6 = nn.Parameter(torch.tensor(0.))
 
 
-# class ResConv2d(nn.Module):
-#     def __init__(self, image_size, in_channels, out_channels, norm_scale, hidden_kernels=3, kernels=3,
-#                      conv_momentum=None,
-#                      num_heads=1, batch_norm=True, xor=True):
-#         super(ResConv2d, self).__init__()
-#         # if in_channels != out_channels:
-#         #     self.conv_momentum1 = nn.Conv2d(in_channels, out_channels, 1, bias=False)
-#         # else:
-#         #     self.conv_momentum1 = nn.Conv2d(in_channels, out_channels, 1, bias=False) # nn.Parameter(torch.tensor(1.)) # nn.Conv2d(in_channels, out_channels, 1, bias=False)
-#         # if in_channels * 2 != out_channels:
-#         #     self.conv_momentum2 = nn.Conv2d(in_channels * 2, out_channels, 1, bias=False)
-#         # else:
-#         #     self.conv_momentum2 = nn.Parameter(torch.tensor(1.)) # nn.Conv2d(in_channels * 2, out_channels, 1, bias=False) #
-#         if '__getitem__' in dir(num_heads):
-#             self.num_heads = num_heads
-#         else:
-#             self.num_heads = (num_heads, num_heads)
-#         self.pre_relu_norm = ReLUSplitNorm(in_channels, norm_scale, False, 0.5, 0.)
-#         self.conv = ButterflyGatingUnit(in_channels, norm_scale, hidden_kernels, kernels)
-#         self.conv_momentum = nn.Conv2d(in_channels, out_channels, 1, bias=False)
-#         self.full_conv = nn.Conv2d(in_channels * 2, out_channels, kernels, padding=kernels // 2, bias=False)
-#         self.norm_scale = norm_scale
-#         self.batch_norm = batch_norm
-#         self.xor = xor
-#         self.dropout = nn.Dropout()
-#         self.pre_relu = ResReLU(reverse=False)
-#         self.in_channels = in_channels
-#         self.out_channels = out_channels
-#         if self.num_heads[0] * self.num_heads[1] == 1:
-#             self.multi_head_downsampling = None
-#         else:
-#             self.multi_head_downsampling = nn.Unfold(self.num_heads, stride=self.num_heads) # nn.AvgPool2d(self.num_heads)
-#
-#     # def feature_map_stack(self, y):
-#     #     if self.multi_head_downsampling is not None:
-#     #         h, w = y.shape[-2:]
-#     #         y = self.multi_head_downsampling(y)
-#     #         y = y.unflatten(1, (-1, self.num_heads[0] * self.num_heads[1], self.num_heads[0] * self.num_heads[1]))
-#     #         y = y.transpose(2, 3).contiguous()
-#     #         y = y.view((y.size(0), -1) + self.num_heads + (int(sqrt(y.size(-1))), int(sqrt(y.size(-1)))))
-#     #     # if self.multi_head_downsampling is not None:
-#     #     #     h, w = y.shape[-2:]
-#     #     #     y = self.multi_head_downsampling(y).unflatten(1, (-1,) + self.num_heads)
-#     #         y = y.transpose(3, 4).contiguous()
-#     #         y = y.view(y.shape[:2] + (y.shape[2] * y.shape[3], -1))
-#     #         if y.size(2) * y.size(3) < h * w:
-#     #             h1, w1 = (h - y.size(2)) // 2, (w - y.size(3)) // 2
-#     #             h2, w2 = h - y.size(2) - h1, w - y.size(3) - w1
-#     #             y = F.pad(y, (w1, w2, h1, h2))
-#     #     return y
-#
-#     def forward(self, x):
-#         y1, y2 = self.pre_relu_norm(x)
-#         y, _ = self.conv(y1, y2) #  + self.pos_code
-#         y_sum = y1 + y2
-#         x = self.conv_momentum(y_sum) # 0.618034 * self.conv_momentum1 * y_sum if type(self.conv_momentum1) is nn.parameter.Parameter else
-#         # x2 = y if type(self.conv_momentum2) is nn.parameter.Parameter else self.conv_momentum2(y) # self.conv_momentum2 *
-#         return x + self.full_conv(y) # self.feature_map_stack(y)
+    def batch_norm(self, x):
+        # x = x.transpose(0, 1)
+        x = self.norm_scale * F.layer_norm(x, x.shape[1:])
+        # x = x.transpose(0, 1)
+        return x
+
+    def full_norm(self, x):
+        x = self.norm_scale * (x - x.mean()) / (x.std() + 1e-4)
+        return x
+
+    def forward(self, x1, x2):
+        single_y1 = self.conv1(x1)
+        single_y2 = self.conv2(x2)
+        y1 = self.xor_conv1(x1)
+        y2 = self.xor_conv2(x1)
+        y3 = self.xor_conv3(x2)
+        y4 = self.xor_conv4(x2)
+        y5 = self.xor_conv5(x2)
+        y6 = self.xor_conv6(x1)
+        single_y1 = self.conv_momentum1 * single_y1 + self.full_norm(single_y1) # F.layer_norm(single_y1, single_y1.shape[1:])
+        single_y2 = self.conv_momentum2 * single_y2 + self.full_norm(single_y2) # F.layer_norm(single_y2, single_y2.shape[1:])
+        y1 = self.batch_norm(y1) # F.layer_norm(y1, y1.shape[1:])
+        y2 = self.batch_norm(y2) # F.layer_norm(y2, y2.shape[1:])
+        y3 = self.batch_norm(y3) # F.layer_norm(y3, y3.shape[1:])
+        y4 = self.batch_norm(y4) # F.layer_norm(y4, y4.shape[1:])
+        y5 = self.batch_norm(y5)
+        y6 = self.batch_norm(y6)
+        return single_y1 + single_y2 + y1 * y2 + y3 * y4 + y5 * y6
 
 
 class MetaResConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, norm_scale, kernel_size):
+    def __init__(self, in_channels, out_channels, norm_scale, kernels):
         super(MetaResConv2d, self).__init__()
-        self.relu_split_norm = ReLUSplitNorm(norm_scale, 0.)
-        # self.attn_conv = AttnConv2d(in_channels, out_channels, norm_scale, kernel_size)
-        # self.attn_conv2 = AttnConv2d(in_channels, out_channels, norm_scale, kernel_size)
-        self.conv1 = ResConv2d(in_channels, out_channels, norm_scale, kernel_size, True)
-        self.conv2 = ResConv2d(in_channels, out_channels, norm_scale, kernel_size)
+        if in_channels != out_channels:
+            self.conv_momentum1 = nn.Conv2d(in_channels, out_channels, 1, bias=False)
+            self.conv_momentum2 = nn.Conv2d(in_channels, out_channels, 1, bias=False)
+        else:
+            self.conv_momentum1 = nn.Parameter(torch.tensor(1.))
+            self.conv_momentum2 = nn.Parameter(torch.tensor(1.))
+        self.mean_split = ReLUSplitNorm(in_channels, norm_scale)
+        self.conv1 = XorConv2d(in_channels, out_channels, norm_scale, kernels)
+        # self.conv2 = ButterflyConv2d(in_channels, out_channels, norm_scale, kernels)
+        self.norm = HuberLayerNorm([1, 2, 3])
+        self.norm_scale = norm_scale
 
     def forward(self, x):
-        x1, x2 = self.relu_split_norm(x)
+        x1, x2 = self.mean_split(x)
         y1 = self.conv1(x1, x2)
-        y2 = self.conv2(x2, x1)
-        return y1 + y2
+        # y2 = self.conv2(x2, x1)
+        if type(self.conv_momentum1) is nn.parameter.Parameter:
+            x1 = self.conv_momentum1 * x1
+            x2 = self.conv_momentum2 * x2
+        else:
+            x1 = self.conv_momentum1(x1)
+            x2 = self.conv_momentum2(x2)
+        return x1 + x2 + y1 # + y2
 
 
 class MetaResNet(nn.Module):

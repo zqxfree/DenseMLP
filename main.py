@@ -528,25 +528,25 @@ def print_res_prob():
     for i, j in model.named_parameters():
         if 'normddd_momentum' in i and c == 0:
             print('norm_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
-        elif 'conv_momentum' in i and c == 0:
-            if j.data.numel() == 1:
-                # if j.item() > 5.64:
-                #     j.data = torch.tensor(10.).cuda()
-                print('conv_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
-            else:
-                print('conv_momentum{}: {}'.format(k, round(j.data.abs().max().item(), 4)), end=' ')
-            c += 1
-        elif 'up_norm_momentum' in i and c == 1:
-            print('up_norm_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
-        elif 'down_norm_momentum' in i and c == 1:
-            print('down_norm_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
-        elif 'up_avg_momentum' in i and c == 1:
-            print('up_avg_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
-        elif 'down_avg_momentum' in i and c == 1:
-            print('down_avg_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        # elif 'conv_momentum' in i and c == 0:
+        #     if j.data.numel() == 1:
+        #         # if j.item() > 5.64:
+        #         #     j.data = torch.tensor(10.).cuda()
+        #         print('conv_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        #     else:
+        #         print('conv_momentum{}: {}'.format(k, round(j.data.abs().max().item(), 4)), end=' ')
+        #     c += 1
+        # elif 'up_norm_momentum' in i and c == 1:
+        #     print('up_norm_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        # elif 'down_norm_momentum' in i and c == 1:
+        #     print('down_norm_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        # elif 'up_avg_momentum' in i and c == 1:
+        #     print('up_avg_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        # elif 'down_avg_momentum' in i and c == 1:
+        #     print('down_avg_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
         # elif 'relu_neg_momentum' in i and c == 1:
         #     print('relu_neg_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
-            print()
+        #     print()
             k += 1
             c = 0
         # elif 'relu_pos_momentum' in i and c == 2:
