@@ -25,7 +25,7 @@ from matplotlib.animation import FuncAnimation
 
 # Hyper-parameters
 batch_size = 100
-# learning_rate = 0.1816
+# learning_rate = 0.1773
 
 # class ResMLP(nn.Module):
 #     def __init__(self):
@@ -140,7 +140,7 @@ batch_size = 100
     # nn.Flatten(1),
     # nn.Linear(512 * 2 * 2, 10),
 
-    # MetaResNet([[64, 2], [128, 2], [128, 4]], 1, 5, norm_scale=0.1816, image_sizes=[28, 28], dropout=False),
+    # MetaResNet([[64, 2], [128, 2], [128, 4]], 1, 5, norm_scale=0.1773, image_sizes=[28, 28], dropout=False),
     # # ResBatchNorm2d(512),
     # # nn.Conv2d(512, 10, 2),
     # nn.Flatten(1),
@@ -412,12 +412,12 @@ batch_size = 100
     # nn.Linear(64 * 49, 10),
 # ).cuda()
 model = nn.Sequential(
-    # MetaResNet([[64, 2], [128, 2], [128, 4]], 1, 5, norm_scale=0.1816, image_sizes=[28, 28], dropout=False),
-    MetaResNet([[64, 2], [128, 2], [128, 4]], 1, 3, norm_scale=0.1816, image_sizes=[28, 28], dropout=False),
+    # MetaResNet([[64, 2], [128, 2], [128, 4]], 1, 5, norm_scale=0.1773, image_sizes=[28, 28], dropout=False),
+    MetaResNet([[32, 2], [128, 2], [128, 4]], 3, 3, norm_scale=0.1773, image_sizes=[28, 28], dropout=False),
     # ResBatchNorm2d(512),
     # nn.Conv2d(512, 10, 2),
     nn.Flatten(1),
-    nn.Linear(128 * 3 * 3, 10),
+    nn.Linear(128 * 4 * 4, 10),
 ).cuda()
 # model = AutoEncoder(128, 128, 128).cuda()
 optimizer = torch.optim.Adam(model.parameters())
@@ -449,7 +449,7 @@ transform_test1 = transforms.Compose([
 norm_mean = [0.485, 0.456, 0.406]  # 均值
 norm_std = [0.229, 0.224, 0.225]  # 方差
 transform_train2 = transforms.Compose([transforms.ToTensor(),  # 将PILImage转换为张量
-                                      # 将[0.1816]归一化到[-1,1]
+                                      # 将[0.1773]归一化到[-1,1]
                                       transforms.Normalize(norm_mean, norm_std),
                                       transforms.RandomHorizontalFlip(),  # 随机水平镜像
                                       transforms.RandomErasing(scale=(0.04, 0.2), ratio=(0.5, 2)),  # 随机遮挡
@@ -480,32 +480,32 @@ trans_train = transforms.Compose(
 trans_valid = transforms.Compose(
     [transforms.Resize(256),  # 是按照比例把图像最小的一个边长放缩到256，另一边按照相同比例放缩。
      transforms.CenterCrop(224),  # 依据给定的size从中心裁剪
-     transforms.ToTensor(),  # 将PIL Image或者 ndarray 转换为tensor，并且归一化至[0.1816]
-     # 归一化至[0.1816]是直接除以255，若自己的ndarray数据尺度有变化，则需要自行修改。
+     transforms.ToTensor(),  # 将PIL Image或者 ndarray 转换为tensor，并且归一化至[0.1773]
+     # 归一化至[0.1773]是直接除以255，若自己的ndarray数据尺度有变化，则需要自行修改。
      transforms.Normalize(mean=[0.485, 0.456, 0.406],
                           std=[0.229, 0.224, 0.225])]
 )
 
 
 # MNIST dataset
-train_dataset = torchvision.datasets.MNIST(root=r'D:/PycharmProjects/dataset',
-                                           train=True,
-                                           transform=transforms.ToTensor(),
-                                           download=False)
-
-test_dataset = torchvision.datasets.MNIST(root='D:/PycharmProjects/dataset',
-                                          train=False,
-                                          transform=transforms.ToTensor(),
-                                          download=False)
-# train_dataset = torchvision.datasets.CIFAR10(root=r'D:/PycharmProjects/dataset',
-#                                              train=True,
-#                                              transform=transform_train2, # transforms.ToTensor(), # , # cifar10_transform, #  #
-#                                              download=False)
+# train_dataset = torchvision.datasets.MNIST(root=r'D:/PycharmProjects/dataset',
+#                                            train=True,
+#                                            transform=transforms.ToTensor(),
+#                                            download=False)
 #
-# test_dataset = torchvision.datasets.CIFAR10(root=r'D:/PycharmProjects/dataset',
-#                                             train=False,
-#                                             transform=transform_test2 # transforms.ToTensor() #
-#                                             )
+# test_dataset = torchvision.datasets.MNIST(root='D:/PycharmProjects/dataset',
+#                                           train=False,
+#                                           transform=transforms.ToTensor(),
+#                                           download=False)
+train_dataset = torchvision.datasets.CIFAR10(root=r'D:/PycharmProjects/dataset',
+                                             train=True,
+                                             transform=transform_train2, #transforms.ToTensor(), #  , # cifar10_transform, #  #
+                                             download=False)
+
+test_dataset = torchvision.datasets.CIFAR10(root=r'D:/PycharmProjects/dataset',
+                                            train=False,
+                                            transform=transform_test2 #transforms.ToTensor() #
+                                            )
 # Data loader
 train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
                                            batch_size=batch_size,
@@ -515,7 +515,7 @@ test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
                                           batch_size=batch_size,
                                           shuffle=False)
 
-train_total_labels = 60000
+train_total_labels = 50000
 test_total_labels = 10000
 num_epochs = 500
 save_model_file = None

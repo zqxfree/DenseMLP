@@ -167,35 +167,36 @@ class HuberLayerNorm(nn.Module):
 class ReLUSplitNorm(nn.Module):
     def __init__(self, in_channel, norm_scale):
         super(ReLUSplitNorm, self).__init__()
+        self.up_avg_momentum = nn.Parameter(torch.tensor(1.))
+        self.down_avg_momentum = nn.Parameter(torch.tensor(1.))  # nn.Parameter(torch.ones(in_channel, 1, 1)) # nn.Parameter(torch.tensor(1.))
+        self.up_relu_momentum = nn.Parameter(torch.tensor(1.))
+        self.down_relu_momentum = nn.Parameter(torch.tensor(1.))
         self.up_norm_momentum = nn.Parameter(torch.tensor(0.)) # nn.Parameter(torch.zeros(in_channel, 1, 1)) #
         self.down_norm_momentum = nn.Parameter(torch.tensor(0.)) # nn.Parameter(torch.zeros(in_channel, 1, 1)) # nn.Parameter(torch.tensor(0.))
-        self.up_avg_momentum = nn.Parameter(torch.tensor(1.)) # nn.Parameter(torch.ones(in_channel, 1, 1)) # nn.Parameter(torch.tensor(1.))
-        self.down_avg_momentum = nn.Parameter(torch.tensor(1.)) # nn.Parameter(torch.ones(in_channel, 1, 1)) # nn.Parameter(torch.tensor(1.))
+        self.momentum = nn.Parameter(torch.tensor(1.))
         self.norm_scale = norm_scale
+        self.norm1 = nn.BatchNorm2d(in_channel, affine=False)
+        self.norm2 = nn.BatchNorm2d(in_channel, affine=False)
 
     def forward(self, x):
         avg_dims = list(range(1, x.dim()))
         # 均值之上归一化
-        avg0 = x.mean() # [0, 2, 3], keepdim=True
-        # upmask = (x > avg0).type(torch.int).data
-        # downmask = 1 - upmask
-        # total_size = x.numel() / x.size(0)
-        # pos_size = upmask.sum(avg_dims, keepdim=True)
-        # neg_size = total_size - pos_size
-        x1 = self.up_avg_momentum * avg0 + F.gelu(x - avg0) # + F.gelu(x - avg0) # upmask * x self.up_relu_neg_momentum * x + avg0 +
+        avg0 = x.mean() # [1, 2, 3], keepdim=True
+        up_mask = (x > avg0).type(torch.int).data
+        x1 = up_mask * avg0 + F.gelu(x - avg0) #self.up_avg_momentum * up_mask * avg0
         # avg1 = x1.sum(avg_dims, keepdim=True) / pos_size
         # x1_norm = self.norm_scale * torch.sqrt(pos_size / total_size) * F.layer_norm(x1 + avg1 * downmask, x1.shape[1:]) #
-        x1_norm = self.norm_scale * (x1 - x1.mean()) / (x1.std() + 1e-4) # [0, 2, 3], keepdim=True, unbiased=False / ((x1 - x1.mean()).abs().mean() + 1e-4) # * huber_full_norm(x1) #  self.norm_scale * F.layer_norm(x1, x1.shape[1:])
+        x1_norm = self.norm_scale * self.norm1(x1) # F.layer_norm(x1, x1.shape[1:]) #(x1 - x1.mean()) / (x1.std() + 1e-4) #   [0, 2, 3], keepdim=True, unbiased=False / ((x1 - x1.mean()).abs().mean() + 1e-4) # * huber_full_norm(x1) #  self.norm_scale * F.layer_norm(x1, x1.shape[1:])
         # 均值之下归一化
-        x2 = -self.down_avg_momentum * avg0 + F.gelu(avg0 - x) # + F.gelu(avg0 - x) # + downmask * x self.down_relu_neg_momentum * x + avg0
+        x2 = (1 - up_mask) * avg0 - F.gelu(avg0 - x) # self.down_avg_momentum * (1 - up_mask) * avg0  -self.down_avg_momentum * avg0 + F.gelu(-x) #  + F.gelu(avg0 - x) # + downmask * x self.down_relu_neg_momentum * x + avg0
         # avg2 = x2.sum(avg_dims, keepdim=True) / neg_size
         # x2_norm = self.norm_scale * torch.sqrt(neg_size / total_size) * F.layer_norm(x2 + avg2 * upmask, x2.shape[1:]) #
-        x2_norm = self.norm_scale * (x2 - x2.mean()) / (x2.std() + 1e-4) #  / ((x2 - x2.mean()).abs().mean() + 1e-4) # * huber_full_norm(x2) # self.norm_scale * F.layer_norm(x2, x2.shape[1:])
+        x2_norm = self.norm_scale * self.norm2(x2) # F.layer_norm(x2, x2.shape[1:]) #(x2 - x2.mean()) / (x2.std() + 1e-4) #    / ((x2 - x2.mean()).abs().mean() + 1e-4) # * huber_full_norm(x2) # self.norm_scale * F.layer_norm(x2, x2.shape[1:])
         # x1 = self.up_norm_momentum * x1 + x1_norm
         # x2 = self.down_norm_momentum * x2 + x2_norm
-        x1 = self.up_norm_momentum * x1 + x1_norm # 0.381966 * self.up_norm_momentum *
-        x2 = self.down_norm_momentum * x2 + x2_norm
-        return x1, x2 # 0.5 * (self.norm_coef1 * x1_norm + self.norm_coef2 * x2_norm) + self.res_coef * x
+        # x1 = self.up_norm_momentum * x1 + x1_norm
+        # x2 = self.down_norm_momentum * x2 + x2_norm
+        return x1, x2, self.up_norm_momentum * x1 + x1_norm, self.down_norm_momentum * x2 + x2_norm
 
 
 class AttnConv2d(nn.Module):
@@ -345,7 +346,7 @@ class ButterflyConv2d(nn.Module):
 
 
 class XorConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, norm_scale, kernels):
+    def __init__(self, in_channels, out_channels, norm_scale, kernels, cross):
         super(XorConv2d, self).__init__()
         self.xor_conv1 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.xor_conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
@@ -355,51 +356,62 @@ class XorConv2d(nn.Module):
         self.xor_conv6 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
+        self.conv3 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.norm = HuberLayerNorm([1, 2, 3])
         self.norm_scale = norm_scale
         self.kernels = kernels
-        self.conv_momentum1 = nn.Parameter(torch.tensor(0.))
-        self.conv_momentum2 = nn.Parameter(torch.tensor(0.))
-        self.xor_momentum1 = nn.Parameter(torch.tensor(0.))
-        self.xor_momentum2 = nn.Parameter(torch.tensor(0.))
-        self.xor_momentum3 = nn.Parameter(torch.tensor(0.))
-        self.xor_momentum4 = nn.Parameter(torch.tensor(0.))
-        self.xor_momentum5 = nn.Parameter(torch.tensor(0.))
-        self.xor_momentum6 = nn.Parameter(torch.tensor(0.))
+        self.conv_momentum1 = nn.Parameter(torch.tensor(1.))
+        self.conv_momentum2 = nn.Parameter(torch.tensor(1.))
+        self.xor_conv_momentum1 = nn.Parameter(torch.tensor(1.))
+        self.xor_conv_momentum2 = nn.Parameter(torch.tensor(1.))
+        self.xor_conv_momentum3 = nn.Parameter(torch.tensor(1.))
+        self.xor_conv_momentum4 = nn.Parameter(torch.tensor(1.))
+        self.xor_conv_momentum5 = nn.Parameter(torch.tensor(1.))
+        self.xor_conv_momentum6 = nn.Parameter(torch.tensor(1.))
+        self.out_channels = out_channels
+        self.kernels = kernels
+        self.norm1 = nn.BatchNorm2d(out_channels, affine=False)
+        self.norm2 = nn.BatchNorm2d(out_channels, affine=False)
+        self.xor_norm1 = nn.BatchNorm2d(out_channels, affine=False)
+        self.xor_norm2 = nn.BatchNorm2d(out_channels, affine=False)
+        self.xor_norm3 = nn.BatchNorm2d(out_channels, affine=False)
+        self.xor_norm4 = nn.BatchNorm2d(out_channels, affine=False)
+        self.xor_norm5 = nn.BatchNorm2d(out_channels, affine=False)
+        self.xor_norm6 = nn.BatchNorm2d(out_channels, affine=False)
+        self.cross = cross
 
-
-    def batch_norm(self, x):
-        # x = x.transpose(0, 1)
-        x = self.norm_scale * F.layer_norm(x, x.shape[1:])
-        # x = x.transpose(0, 1)
+    def full_norm(self, x, conv_momentum):
+        x = 0.5 * conv_momentum * x + self.norm_scale * (x - x.mean()) / (x.std() + 1e-4) # conv_momentum * x +  conv_momentum * x +
         return x
 
-    def full_norm(self, x):
-        x = self.norm_scale * (x - x.mean()) / (x.std() + 1e-4)
+    def res_layer_norm(self, x, conv_momentum):
+        # x = x.transpose(0, 1)
+        x = conv_momentum * x + self.norm_scale * F.layer_norm(x, x.shape[1:]) # F.layer_norm(x, x.shape[1:])) # conv_momentum * x +  (1 / sqrt(self.out_channels) / self.kernels) * conv_momentum
+        # x = x.transpose(0, 1)
         return x
 
     def forward(self, x1, x2):
         single_y1 = self.conv1(x1)
         single_y2 = self.conv2(x2)
+        single_y1 = self.res_layer_norm(single_y1, self.conv_momentum1)
+        single_y2 = self.res_layer_norm(single_y2, self.conv_momentum1)
         y1 = self.xor_conv1(x1)
         y2 = self.xor_conv2(x1)
         y3 = self.xor_conv3(x2)
         y4 = self.xor_conv4(x2)
+        y1_xor = y1 * y2
+        y2_xor = y3 * y4
+        y1_xor = self.res_layer_norm(y1_xor, self.conv_momentum1)
+        y2_xor = self.res_layer_norm(y2_xor, self.conv_momentum1)
         y5 = self.xor_conv5(x2)
         y6 = self.xor_conv6(x1)
-        single_y1 = self.conv_momentum1 * single_y1 + self.full_norm(single_y1) # F.layer_norm(single_y1, single_y1.shape[1:])
-        single_y2 = self.conv_momentum2 * single_y2 + self.full_norm(single_y2) # F.layer_norm(single_y2, single_y2.shape[1:])
-        y1 = self.batch_norm(y1) # F.layer_norm(y1, y1.shape[1:])
-        y2 = self.batch_norm(y2) # F.layer_norm(y2, y2.shape[1:])
-        y3 = self.batch_norm(y3) # F.layer_norm(y3, y3.shape[1:])
-        y4 = self.batch_norm(y4) # F.layer_norm(y4, y4.shape[1:])
-        y5 = self.batch_norm(y5)
-        y6 = self.batch_norm(y6)
-        return single_y1 + single_y2 + y1 * y2 + y3 * y4 + y5 * y6
+        y3_xor = y5 * y6
+        y3_xor = self.res_layer_norm(y3_xor, self.conv_momentum1)
+        return single_y1 + single_y2 + y1_xor + y2_xor + y3_xor
 
 
 class MetaResConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, norm_scale, kernels):
+    def __init__(self, in_channels, out_channels, norm_scale, kernels, cross):
         super(MetaResConv2d, self).__init__()
         if in_channels != out_channels:
             self.conv_momentum1 = nn.Conv2d(in_channels, out_channels, 1, bias=False)
@@ -408,42 +420,46 @@ class MetaResConv2d(nn.Module):
             self.conv_momentum1 = nn.Parameter(torch.tensor(1.))
             self.conv_momentum2 = nn.Parameter(torch.tensor(1.))
         self.mean_split = ReLUSplitNorm(in_channels, norm_scale)
-        self.conv1 = XorConv2d(in_channels, out_channels, norm_scale, kernels)
+        self.conv1 = XorConv2d(in_channels, out_channels, norm_scale, kernels, cross)
         # self.conv2 = ButterflyConv2d(in_channels, out_channels, norm_scale, kernels)
         self.norm = HuberLayerNorm([1, 2, 3])
         self.norm_scale = norm_scale
 
     def forward(self, x):
-        x1, x2 = self.mean_split(x)
-        y1 = self.conv1(x1, x2)
-        # y2 = self.conv2(x2, x1)
+        x1, x2, x1_norm, x2_norm = self.mean_split(x)
+        y = self.conv1(x1_norm, x2_norm)
         if type(self.conv_momentum1) is nn.parameter.Parameter:
             x1 = self.conv_momentum1 * x1
             x2 = self.conv_momentum2 * x2
         else:
             x1 = self.conv_momentum1(x1)
             x2 = self.conv_momentum2(x2)
-        return x1 + x2 + y1 # + y2
+        # if type(self.conv_momentum1) is not nn.parameter.Parameter:
+        #     x3 = self.conv_momentum1(x3)
+        return x1 + x2 + y
 
 
 class MetaResNet(nn.Module):
-    def __init__(self, num_layers, init_channels, kernel_size=3, norm_scale=0.1816, image_sizes=None, dropout=True):
+    def __init__(self, num_layers, init_channels, kernel_size=3, norm_scale=0.1773, image_sizes=None, dropout=True):
         super(MetaResNet, self).__init__()
         num_hidden_layers = int(torch.tensor([i[1] for i in num_layers]).sum().item())
         dropouts = [0.5] * (len(num_layers) - 1) + [0.5] if dropout else None
         alpha = 1. * torch.ones(num_hidden_layers)  # torch.sort(torch.cat([torch.full((1,), 1.), 0.905 + 0.09 * torch.rand(num_hidden_layers - 2), torch.full((1,), 0.9)]), descending=True).values #
         beta = 0. * torch.ones(num_hidden_layers + len(num_layers)) # torch.sort(torch.cat([torch.full((1,), 1.), 0.905 + 0.09 * torch.rand(num_hidden_layers + len(num_layers) - 3), torch.full((1,), 0.9)]), descending=True).values #
-        layers = [MetaResConv2d(init_channels, num_layers[0][0], norm_scale, kernel_size)]
+        layers = [MetaResConv2d(init_channels, num_layers[0][0], norm_scale, kernel_size, False)]
         xor = True
         k = -1
         alpha_id, beta_id = 0, 1
+        cross = True
         # prob = True
         for n, (i, j) in enumerate(num_layers):
             if k > 0 and k != i:
-                layers.append(MetaResConv2d(k, i, norm_scale, kernel_size))
+                layers.append(MetaResConv2d(k, i, norm_scale, kernel_size, cross))
                 beta_id += 1
+                cross = ~cross
             for id in range(j):
-                layers.append(MetaResConv2d(i, i, norm_scale, kernel_size)) # id % 2 == 1
+                layers.append(MetaResConv2d(i, i, norm_scale, kernel_size, cross)) # id % 2 == 1
+                cross = ~cross
                 xor = ~xor
                 alpha_id += 1
                 beta_id += 1
