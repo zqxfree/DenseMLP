@@ -413,7 +413,7 @@ batch_size = 100
 # ).cuda()
 model = nn.Sequential(
     # MetaResNet([[64, 2], [128, 2], [128, 4]], 1, 5, norm_scale=0.1773, image_sizes=[28, 28], dropout=False),
-    MetaResNet([[32, 2], [128, 2], [128, 4]], 3, 3, norm_scale=0.1773, image_sizes=[28, 28], dropout=False),
+    MetaResNet([[32, 2], [128, 2], [128, 4]], 3, 3, norm_scale=0.1773, image_size=32, dropout=False),
     # ResBatchNorm2d(512),
     # nn.Conv2d(512, 10, 2),
     nn.Flatten(1),
@@ -526,27 +526,42 @@ def print_res_prob():
     k = 1
     c = 0
     for i, j in model.named_parameters():
-        if 'normddd_momentum' in i and c == 0:
+        if 'normddd_momentum' in i: # and c == 0:
             print('norm_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
-        # elif 'conv_momentum' in i and c == 0:
+        # elif 'up_res_momentum' in i: # and c == 0:
         #     if j.data.numel() == 1:
         #         # if j.item() > 5.64:
         #         #     j.data = torch.tensor(10.).cuda()
-        #         print('conv_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        #         print('up_res_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
         #     else:
-        #         print('conv_momentum{}: {}'.format(k, round(j.data.abs().max().item(), 4)), end=' ')
+        #         print('up_res_momentum{}: {}'.format(k, round(j.data.abs().max().item(), 4)), end=' ')
         #     c += 1
-        # elif 'up_norm_momentum' in i and c == 1:
+        # elif 'down_res_momentum' in i: # and c == 0:
+        #     if j.data.numel() == 1:
+        #         # if j.item() > 5.64:
+        #         #     j.data = torch.tensor(10.).cuda()
+        #         print('down_res_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        #     else:
+        #         print('down_res_momentum{}: {}'.format(k, round(j.data.abs().max().item(), 4)), end=' ')
+        #     c += 1
+        # elif 'up_norm_momentum' in i:# and c == 1:
         #     print('up_norm_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
-        # elif 'down_norm_momentum' in i and c == 1:
+        #     c += 1
+        # elif 'down_norm_momentum' in i:# and c == 1:
         #     print('down_norm_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        #     c += 1
         # elif 'up_avg_momentum' in i and c == 1:
         #     print('up_avg_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
         # elif 'down_avg_momentum' in i and c == 1:
         #     print('down_avg_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
-        # elif 'relu_neg_momentum' in i and c == 1:
-        #     print('relu_neg_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
-        #     print()
+        # elif 'conv_momentum' in i: # and c == 1:
+        #     print('conv_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        #     c += 1
+        # elif 'norm_momentum' in i:  # and c == 1:
+        #     print('norm_momentum{}: {}'.format(k, round(j.item(), 4)), end=' ')
+        #     c += 1
+        if c == 1:
+            print()
             k += 1
             c = 0
         # elif 'relu_pos_momentum' in i and c == 2:
