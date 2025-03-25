@@ -5,20 +5,6 @@ import torch.nn.functional as F
 from sympy.polys.polyconfig import query
 
 
-class Flipout(nn.Module):
-    def __init__(self, p=0.25):
-        super(Flipout, self).__init__()
-        assert 0 < p < 0.5, "p should be smaller than 0.5!"
-        self.p = p
-        self.flip_scale = 1. / (1. - 2. * p)
-
-    def forward(self, x):
-        if self.training:
-            x[torch.rand_like(x) < self.p] *= -1
-            return self.flip_scale * x
-        return x
-
-
 class AdaptiveFocalLoss(nn.Module):
     def __init__(self, num_classes, momentum=0.9, alpha=0.5, beta=0., gamma=1., focal=0., reverse_sample_set=None,
                  label_smoothing=0.):
@@ -66,47 +52,6 @@ class AdaptiveFocalLoss(nn.Module):
         return -(label_weight * y_log).sum() / label_weight.sum()
 
 
-class ResBatchNorm2d(nn.Module):
-    def __init__(self, in_channels, norm_scale, bias=False, short_cut=None):
-        super(ResBatchNorm2d, self).__init__()
-        self.bn = nn.BatchNorm2d(in_channels, affine=bias) # nn.BatchNorm2d(channels, affine=True) # FullNorm() # SphereNorm2d(channels)  #
-        self.norm_scale = norm_scale # nn.Parameter(torch.tensor(norm_scale)) # norm_scale
-        self.alpha = nn.Parameter(torch.tensor(1.)) if short_cut is not None else None
-        self.shortcut = short_cut if short_cut is not None else None
-
-    def forward(self, x):
-        y = self.norm_scale * self.bn(x)
-        if self.alpha is not None:
-            y += self.shortcut * self.alpha * x
-        return y # self.norm_scale * y  # self.norm_scale * (self.norm_momentum * x + self.bn(x)) # self.norm_scale * (self.norm_momentum * x + F.layer_norm(x, x.shape[1:])) #
-
-
-class ResLayerNorm2d(nn.Module):
-    def __init__(self, in_channels, norm_scale, bias=False, short_cut=None):
-        super(ResLayerNorm2d, self).__init__()
-        # self.ln = nn.LayerNorm(image_size, elementwise_affine=bias) # nn.BatchNorm2d(channels, affine=True) # FullNorm() # SphereNorm2d(channels)  #
-        self.norm_scale = norm_scale # nn.Parameter(torch.tensor(norm_scale)) #
-        self.alpha = nn.Parameter(torch.tensor(1.)) if short_cut is not None else None
-        self.shortcut = short_cut if short_cut is not None else None
-
-    def forward(self, x):
-        y = self.norm_scale * F.layer_norm(x, x.shape[1:])
-        if self.alpha is not None:
-            y += self.shortcut * self.alpha * x
-        return y # self.norm_scale * y
-
-
-class ResReLU(nn.Module):
-    def __init__(self, relu_neg_momentum=0., reverse=False):
-        super(ResReLU, self).__init__()
-        self.relu = nn.ReLU()
-        self.relu_neg_momentum = nn.Parameter(torch.tensor(relu_neg_momentum))
-        self.reverse = reverse
-
-    def forward(self, x):
-        return self.relu_neg_momentum * x + (-self.relu(-x) if self.reverse else self.relu(x))
-
-
 # class ReLUSplitNorm(nn.Module):
 #     def __init__(self, in_channels, norm_scale, bias=False, short_cut=None, relu_neg_momentum=0.):
 #         super(ReLUSplitNorm, self).__init__()
@@ -121,24 +66,50 @@ class ResReLU(nn.Module):
 #         return y1, y2
 
 
-def huber_full_norm(x):
-    x = x - x.mean()
-    x_abs = x.abs()
-    lt1_mask = (x_abs < 0.1).data
-    if lt1_mask.all():
-        x_std = ((x ** 2).mean() + 1e-5).sqrt()
-    elif not lt1_mask.any():
-        x_std = x_abs.mean()
-    else:
-        lt1_mask = lt1_mask.type(torch.int)
-        gt1_mask = 1 - lt1_mask
-        lt1_num = lt1_mask.sum()
-        x_std2 = ((lt1_mask * x) ** 2).sum().sqrt() / sqrt(lt1_num)
-        x_std1 = (gt1_mask * x_abs).sum() / (x.numel() - lt1_num)
-        x_std = x_std1 + x_std2
-    return x / x_std
+def multi_kmeans_1d(x: torch.Tensor, n: int, max_iter: int = 50, epsilon: float = 1e-3):
+    with torch.no_grad():
+        if n <= 0:
+            raise ValueError("聚类数必须大于0")
+        if x.dim() < 2:
+            raise ValueError("输入必须是多维张量")
+        if len(x) < n:
+            raise ValueError("聚类数不能超过数据点数")
 
-def kmeans_1d(x: torch.Tensor, n: int):
+        # 对输入数据进行排序
+        centers = torch.quantile(x, torch.linspace(1 / (n + 1), 1 - 1 / (n + 1), n, device=x.device), -1).permute(
+            list(range(1, x.dim())) + [0])
+
+        for _ in range(max_iter):
+            # 计算分界点
+            boundaries = (centers[..., :-1] + centers[..., 1:]) / 2
+
+            # 向量化计算簇归属
+            compare = x[..., None] > boundaries[..., None, :]
+            cluster_indices = compare.sum(-1)
+
+            # 计算新中心点
+            outputs = []
+            new_centers = []
+
+            for i in range(n):
+                mask = cluster_indices == i
+                y = mask * x
+                y_n = mask.sum(-1)
+                new_centers.append(torch.where(y_n > 0, y.sum(-1) / y_n, centers[..., i]))
+                outputs.append(y)
+
+            # 检查收敛
+            new_centers = torch.stack(new_centers, -1)
+            if torch.all(torch.abs(new_centers - centers).max(
+                    -1).values <= epsilon):  # torch.allclose(centers, new_centers, atol=1e-6):
+                outputs = torch.stack(outputs, 0)
+                break
+            centers = new_centers
+
+        return outputs
+
+
+def flat_kmeans_1d(x: torch.Tensor, n: int, max_iter: int = 0, epsilon: float = 1e-2, equal_dist_centers=True):
     with torch.no_grad():
         if n <= 0:
             raise ValueError("聚类数必须大于0")
@@ -146,92 +117,49 @@ def kmeans_1d(x: torch.Tensor, n: int):
             raise ValueError("输入必须是一维张量")
         if len(x) < n:
             raise ValueError("聚类数不能超过数据点数")
-
+        print(x.min(), x.max())
         # 对输入数据进行排序
-        sorted_x, _ = torch.sort(x)
-        m = sorted_x.shape[0]
+        if equal_dist_centers:
+            centers = torch.linspace(x.min(), x.max(), n + 2, device=x.device)
+        else:
+            centers = torch.quantile(x, torch.linspace(0., 1., n + 2, device=x.device))
 
-        # 初始化中心点
-        indices = torch.linspace(0, m - 1, steps=n, dtype=torch.long, device=x.device)
-        centers = sorted_x[indices]
 
-        max_iter = 100
-        epsilon = 1e-4
 
-        for _ in range(max_iter):
-            # 对中心点进行排序
-            sorted_centers, _ = torch.sort(centers)
+        x = x[:, None]
+        cur_iter = 0
+        while True:
+            # 计算分界点
+            boundaries = (centers[:-1] + centers[1:]) / 2
 
-            if n == 1:
-                # 处理单簇情况
-                new_centers = [sorted_x.mean()]
-            else:
-                # 计算分界点
-                boundaries = (sorted_centers[:-1] + sorted_centers[1:]) / 2
+            # 向量化计算簇归属
+            cluster_indices = (x > boundaries).sum(1, keepdim=True)
 
-                # 向量化计算簇归属
-                compare = sorted_x.unsqueeze(1) > boundaries.unsqueeze(0)
-                cluster_indices = compare.sum(dim=1)
+            # 计算新中心点
+            outputs = []
+            new_centers = []
 
-                # 计算新中心点
-                new_centers = []
-                for i in range(n):
-                    mask = (cluster_indices == i)
-                    cluster = sorted_x[mask]
-                    if len(cluster) > 0:
-                        new_centers.append(cluster.mean())
-                    else:
-                        new_centers.append(sorted_centers[i])
+            for i in range(n + 1):
+                mask = cluster_indices == i
+                y = mask * x
+                y_n = mask.sum()
+                new_centers.append(y.sum() / y_n if y_n > 0 else centers[i])
+                outputs.append(y)
 
-            # 转换为张量并检查收敛
-            new_centers_tensor = torch.stack(new_centers)
-            if torch.max(torch.abs(new_centers_tensor - sorted_centers)) <= epsilon:
+            # 检查收敛
+            new_centers = torch.stack(new_centers)
+            if cur_iter == max_iter or torch.abs(new_centers - centers).max() <= epsilon:  # torch.allclose(centers, new_centers, atol=1e-6):
+                outputs = torch.cat(outputs, 1).t()
                 break
-            centers = new_centers_tensor
 
-        # 最终簇分配
-        if n == 1:
-            return [sorted_x]
-        else:
-            boundaries = (sorted_centers[:-1] + sorted_centers[1:]) / 2
-            compare = sorted_x.unsqueeze(1) > boundaries.unsqueeze(0)
-            cluster_indices = compare.sum(dim=1)
+            centers = new_centers
+            cur_iter += 1
 
-            clusters = []
-            for i in range(n):
-                mask = (cluster_indices == i)
-                clusters.append(sorted_x[mask])
-
-            return clusters
-
-
-class HuberLayerNorm(nn.Module):
-    def __init__(self, layer_dim=None):
-        super(HuberLayerNorm, self).__init__()
-        if layer_dim is None:
-            layer_dim = -1
-        self.layer_dim = layer_dim
-
-    def forward(self, x):
-        x = x - x.mean(self.layer_dim, keepdim=True)
-        x_abs = x.abs()
-        lt1_mask = (x_abs <= 1).data
-        if lt1_mask.all():
-            x_std = ((x ** 2).mean(self.layer_dim, keepdim=True) + 1e-5).sqrt()
-        elif not lt1_mask.any():
-            x_std = x_abs.mean(self.layer_dim, keepdim=True)
-        else:
-            lt1_mask = lt1_mask.type(torch.int)
-            gt1_mask = 1 - lt1_mask
-            lt1_num = lt1_mask.sum()
-            x_std2 = ((lt1_mask * x) ** 2).sum(self.layer_dim, keepdim=True).sqrt() / sqrt(lt1_num)
-            x_std1 = (gt1_mask * x_abs).sum(self.layer_dim, keepdim=True) / (x.numel() - lt1_num)
-            x_std = x_std1 + x_std2
-        return x / x_std
+        return outputs
 
 
 class ReLUSplitNorm(nn.Module):
-    def __init__(self, in_channel, norm_scale):
+    def __init__(self, in_channel, norm_scale, split_num=4):
         super(ReLUSplitNorm, self).__init__()
         self.up_avg_momentum = nn.Parameter(torch.tensor(1.))
         self.down_avg_momentum = nn.Parameter(torch.tensor(1.))  # nn.Parameter(torch.ones(in_channel, 1, 1)) # nn.Parameter(torch.tensor(1.))
@@ -241,35 +169,74 @@ class ReLUSplitNorm(nn.Module):
         self.norm_momentum2 = nn.Parameter(torch.tensor(0.))
         self.norm_momentum3 = nn.Parameter(torch.tensor(0.))
         self.norm_momentum4 = nn.Parameter(torch.tensor(0.))
-        self.momentum = nn.Parameter(torch.tensor(1.))
+        self.split_momentum = nn.Parameter(torch.ones(split_num))
         self.norm_scale = norm_scale
         # self.avg_norm = nn.BatchNorm2d(in_channel, affine=False)
         self.norm1 = nn.BatchNorm2d(in_channel, affine=False)
         self.norm2 = nn.BatchNorm2d(in_channel, affine=False)
         self.norm3 = nn.BatchNorm2d(in_channel, affine=False)
         self.norm4 = nn.BatchNorm2d(in_channel, affine=False)
+        self.norm_momentum = nn.Parameter(torch.zeros(split_num))
+        self.norm = nn.ModuleList([nn.BatchNorm2d(in_channel, affine=False) for _ in range(split_num)])
+        self.split_num = split_num
+        self.init_center_mode = 1
+
+    def init_split_centers_1d(self, x):
+        if self.init_center_mode == 0:
+            centers = torch.linspace(x.min(), x.max() + 1e-3, self.split_num, device=x.device)
+        else:
+            centers = torch.quantile(x, torch.linspace(0., 1., self.split_num, device=x.device))
+        return centers
+
+    def mean_split(self, x, centers, max_iter=1, center_mode="avg"):
+        y = x.unsqueeze(-1)
+        if center_mode == 'avg':
+            for _ in range(max_iter):
+                avg = torch.mean(torch.diff(y < centers) * y, -1) # list(range(x.dim()))
+                centers[1:-1] = torch.mean(torch.diff(y < avg) * y, -1)
+        elif center_mode == 'median':
+            for _ in range(max_iter):
+                avg = torch.mean(torch.diff(y < centers) * y, -1)
+                centers[1:-1] = torch.median(torch.diff(y < avg) * y, -1)
+        else:
+            for _ in range(max_iter):
+                avg = torch.mean(torch.diff(y < centers) * y, -1)
+                centers[1:-1] = (avg[:-1] + avg[1:]) / 2
+        avg = torch.mean(torch.diff(y < centers) * y, -1)
+        return avg.detach() # z, y - z
+
 
     def forward(self, x):
-       # avg0, avg1, avg2 = x.quantile(torch.linspace(0., 1. ,5)[1:-1].data.cuda())
-        avg1 = x.mean() # x.mean() # [1, 2, 3], keepdim=True
-        up_mask = (x > avg1).type(torch.int).data
-        x_up = up_mask * x
-        n_up = up_mask.sum()
-        avg2 = x_up.sum() / n_up
-        avg0 = (x - x_up).sum() / (x.numel() - n_up)
-        # top_mask = (x > avg2).type(torch.int).data
-        # bottom_mask = (x < avg0).type(torch.int).data
-        x1 = F.gelu(x - avg2) # top_mask * x # (1 - up_mask) * avg0 + (up_mask - top_mask) * avg1 + top_mask * x
-        x2 = F.gelu(avg2 - avg1 - F.gelu(avg2 - x)) # (up_mask - top_mask) * x # (1 - up_mask) * avg0 + (up_mask - top_mask) * x + top_mask * avg1
-        x3 = F.gelu(avg1 - avg0 - F.gelu(avg1 - x)) #(1 - up_mask - bottom_mask) * x # up_mask * avg0 + (1 - up_mask - bottom_mask) * x + bottom_mask * avg2
-        x4 = -F.gelu(avg0 - x) #bottom_mask * x # up_mask * avg0 + (1 - up_mask - bottom_mask) * avg2 + bottom_mask * x
+        # avg1 = x.mean() # x.mean() # [1, 2, 3], keepdim=True
+        # up_mask = (x > avg1).type(torch.int).data
+        # x_up = up_mask * x
+        # n_up = up_mask.sum()
+        # avg2 = x_up.sum() / n_up
+        # avg0 = (x - x_up).sum() / (x.numel() - n_up)
+        centers = self.init_split_centers_1d(x.view(-1))
+        avg0, avg1, avg2 = self.mean_split(x, centers)
+        x1 = F.elu(x - avg2) # top_mask * x # (1 - up_mask) * avg0 + (up_mask - top_mask) * avg1 + top_mask * x
+        x2 = F.elu(avg2 - avg1 - F.elu(avg2 - x)) # (up_mask - top_mask) * x # (1 - up_mask) * avg0 + (up_mask - top_mask) * x + top_mask * avg1
+        x3 = F.elu(avg1 - avg0 - F.elu(avg1 - x)) #(1 - up_mask - bottom_mask) * x # up_mask * avg0 + (1 - up_mask - bottom_mask) * x + bottom_mask * avg2
+        x4 = -F.elu(avg0 - x) #bottom_mask * x # up_mask * avg0 + (1 - up_mask - bottom_mask) * avg2 + bottom_mask * x
+
+        # y1 = F.relu(x - avg2)  # top_mask * x # (1 - up_mask) * avg0 + (up_mask - top_mask) * avg1 + top_mask * x
+        # y2 = F.relu(avg2 - avg1 - F.relu(avg2 - x))  # (up_mask - top_mask) * x # (1 - up_mask) * avg0 + (up_mask - top_mask) * x + top_mask * avg1
+        # y3 = F.relu(avg1 - avg0 - F.relu(avg1 - x))  # (1 - up_mask - bottom_mask) * x # up_mask * avg0 + (1 - up_mask - bottom_mask) * x + bottom_mask * avg2
+        # y4 = -F.relu(avg0 - x)  # bottom_mask * x # up_mask * avg0 + (1 - up_mask - bottom_mask) * avg2 + bottom_mask * x
+
         x1_norm = self.norm_momentum1 * x1 + self.norm_scale * self.norm1(x1)
         x2_norm = self.norm_momentum2 * x2 + self.norm_scale * self.norm2(x2)
         x3_norm = self.norm_momentum3 * x3 + self.norm_scale * self.norm3(x3)
         x4_norm = self.norm_momentum4 * x4 + self.norm_scale * self.norm4(x4)
-        # x1 = avg1 + F.gelu(x - avg1)
-        # x2 = avg1 - F.gelu(avg1 - x)
-        return x, x1_norm, x2_norm, x3_norm, x4_norm # x1, x2, x3, x4
+        # x_merge = self.split_momentum[0] * y1 + self.split_momentum[1] * y2  + self.split_momentum[2] * y3 + self.split_momentum[3] * y4
+
+        # centers = self.init_split_centers_1d(x.view(-1))
+        # x_split, x_compl = self.mean_split(x, centers)
+        # x_split = x_split + x_compl.sign() * F.elu(-x_compl.abs())
+        # x_split = (self.norm_momentum * x_split).permute([-1] + list(range(x_split.dim() - 1))) + self.norm_scale * torch.stack([norm(x_split[..., i]) for i, norm in enumerate(self.norm)])
+        # x_split = x_split.permute(list(range(1, x_split.dim())) + [0])
+        return torch.stack([x1_norm, x2_norm, x3_norm, x4_norm]) # x_merge # x1, x2, x3, x4 x_split #
 
 
 class AttnConv2d(nn.Module):
@@ -397,7 +364,6 @@ class XorConv2d(nn.Module):
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.conv2 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
         self.conv3 = nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False)
-        self.norm = HuberLayerNorm([1, 2, 3])
         self.norm_scale = norm_scale
         self.kernels = kernels
         self.conv_momentum1 = nn.Parameter(torch.tensor(1.))
@@ -479,32 +445,27 @@ class XorConv2d(nn.Module):
 class SplitConv2d(nn.Module):
     def __init__(self, in_channels, out_channels, norm_scale, kernels, split_num=4):
         super(SplitConv2d, self).__init__()
-        # self.xor_conv0 = nn.ModuleList(
-        #     [nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False) for _ in range(split_num)])
         self.xor_conv1 = nn.ModuleList([nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False) for _ in range(split_num)])
-        # self.xor_conv2 = nn.ModuleList(
-        #     [nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False) for _ in range(split_num)])
-        xor_conv2 = []
-        for _ in range(split_num):
-            xor_conv2.append(nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=True))
-            nn.init.ones_(xor_conv2[-1].bias)
-        self.xor_conv2 = nn.ModuleList(xor_conv2)
         # xor_conv2 = []
-        # for i in range(split_num):
-        #     for j in range(split_num):
-        #         xor_conv2.append(nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=i == j))
-        #         if i == j:
-        #             nn.init.ones_(xor_conv2[-1].bias)
+        # for _ in range(split_num):
+        #     xor_conv2.append(nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=True))
+        #     nn.init.ones_(xor_conv2[-1].bias)
         # self.xor_conv2 = nn.ModuleList(xor_conv2)
-        self.xor_conv3 = nn.ModuleList(
-            [nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False) for _ in range(split_num)]) # (split_num - 1) // 2 + 1
         # xor_conv3 = []
-        # for i in range(split_num):
-        #     for j in range(split_num):
-        #         xor_conv3.append(nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=i == j))
-        #         if i == j:
-        #             nn.init.ones_(xor_conv3[-1].bias)
+        # for _ in range(split_num):
+        #     xor_conv3.append(nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=True))
+        #     nn.init.ones_(xor_conv3[-1].bias)
         # self.xor_conv3 = nn.ModuleList(xor_conv3)
+
+        if True: #in_channels != out_channels:
+            self.xor_conv2 = nn.ModuleList(
+                [nn.Conv2d(in_channels, out_channels, 1, padding=0, bias=False) for _ in
+                 range(split_num)])  # (split_num - 1) // 2 + 1
+        else:
+            self.xor_conv2 = None
+        self.xor_conv3 = nn.ModuleList(
+            [nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False) for _ in
+             range(split_num)])  # (split_num - 1) // 2 + 1
         self.xor_conv4 = nn.ModuleList(
             [nn.Conv2d(in_channels, out_channels, kernels, padding=kernels // 2, bias=False) for _ in range(split_num)])
         self.norm_scale = norm_scale
@@ -514,15 +475,21 @@ class SplitConv2d(nn.Module):
         self.kernels = kernels
         self.split_num = split_num
         self.cross_monentum = nn.Parameter(torch.ones(4))
+        self.alpha1 = nn.Parameter(torch.tensor(1.)) # nn.Parameter(torch.ones(out_channels, 1, 1))
+        self.alpha2 = nn.Parameter(torch.ones(out_channels, 1, 1)) # nn.Parameter(torch.tensor(1.)) #
 
     def res_layer_norm(self, x):
         return self.conv_momentum * x + self.norm_scale * F.layer_norm(x, x.shape[1:])
 
     def forward(self, x):
         y = 0.
-        z = x[0] + x[1] + x[2] + x[3] # self.cross_monentum[0] * x[0] + self.cross_monentum[1] * x[1] + self.cross_monentum[2] * x[2] + self.cross_monentum[3] * x[3] #
-        for i, (conv1, conv2, conv3, conv4) in enumerate(zip(self.xor_conv1, self.xor_conv2, self.xor_conv3, self.xor_conv4)):
-            y = y + self.res_layer_norm(conv1(x[i]) * conv2(x[i])) + self.res_layer_norm(conv3(x[i]) * conv4(self.cross_monentum[0] * (z - x[i]) / 3))
+        z = x.sum(0) # x[0] + x[1] + x[2] + x[3] # self.cross_monentum[0] * x[0] + self.cross_monentum[1] * x[1] + self.cross_monentum[2] * x[2] + self.cross_monentum[3] * x[3] #
+        if self.xor_conv2 is not None:
+            for xi, conv1, conv2, conv3, conv4 in zip(x, self.xor_conv1, self.xor_conv2, self.xor_conv3, self.xor_conv4):
+                y = y + self.res_layer_norm(conv1(xi) * (self.alpha1 * conv2(xi) + self.alpha2)) + self.res_layer_norm(conv3(xi) * conv4(self.cross_monentum[0] * (z - xi) / 3)) #
+        # else:
+        #     for xi, conv1, conv3, conv4 in zip(x, self.xor_conv1, self.xor_conv3, self.xor_conv4):
+        #         y = y + self.res_layer_norm(conv1(xi) * (self.alpha1 * xi + self.alpha2)) + self.res_layer_norm(conv3(xi) * conv4(self.cross_monentum[0] * (z - xi) / 3))
         # k = 0
         # for i in range(self.split_num):
         #     for j in range(i + 1, self.split_num):
@@ -556,12 +523,11 @@ class MetaResConv2d(nn.Module):
         self.mean_split = ReLUSplitNorm(in_channels, norm_scale)
         self.conv = SplitConv2d(in_channels, out_channels, norm_scale, kernels, 4) #XorConv2d(in_channels, out_channels, norm_scale, kernels, 1)
         # self.conv = ButterflyAttnConv2d(in_channels, out_channels, norm_scale, kernels, 64, image_size, 16)
-        self.norm = HuberLayerNorm([1, 2, 3])
         self.norm_scale = norm_scale
 
     def forward(self, x):
-        x, x1_norm, x2_norm, x3_norm, x4_norm = self.mean_split(x)
-        y = self.conv([x1_norm, x2_norm, x3_norm, x4_norm])
+        x_split = self.mean_split(x)
+        y = self.conv(x_split)
         # x = self.res_momentum[0] * x #1 + self.res_momentum[1] * x2 + self.res_momentum[2] * x3 + self.res_momentum[3] * x4
         if self.res_conv is not None:
             x = self.res_conv(x)

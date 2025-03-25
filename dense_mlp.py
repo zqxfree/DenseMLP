@@ -1661,3 +1661,99 @@ class ResConv2d(nn.Module):
                 self.conv_momentum) is nn.parameter.Parameter else self.conv_momentum(x)
             y = torch.cat([(y1 + y3) / sqrt(2), y2 * y4], 1)  # / sqrt(3) (y1 + y3 + y2 * y4) / sqrt(3)
             return x + self.feature_map_stack(y)
+
+
+class ResBatchNorm2d(nn.Module):
+    def __init__(self, in_channels, norm_scale, bias=False, short_cut=None):
+        super(ResBatchNorm2d, self).__init__()
+        self.bn = nn.BatchNorm2d(in_channels, affine=bias) # nn.BatchNorm2d(channels, affine=True) # FullNorm() # SphereNorm2d(channels)  #
+        self.norm_scale = norm_scale # nn.Parameter(torch.tensor(norm_scale)) # norm_scale
+        self.alpha = nn.Parameter(torch.tensor(1.)) if short_cut is not None else None
+        self.shortcut = short_cut if short_cut is not None else None
+
+    def forward(self, x):
+        y = self.norm_scale * self.bn(x)
+        if self.alpha is not None:
+            y += self.shortcut * self.alpha * x
+        return y # self.norm_scale * y  # self.norm_scale * (self.norm_momentum * x + self.bn(x)) # self.norm_scale * (self.norm_momentum * x + F.layer_norm(x, x.shape[1:])) #
+
+
+class ResLayerNorm2d(nn.Module):
+    def __init__(self, in_channels, norm_scale, bias=False, short_cut=None):
+        super(ResLayerNorm2d, self).__init__()
+        # self.ln = nn.LayerNorm(image_size, elementwise_affine=bias) # nn.BatchNorm2d(channels, affine=True) # FullNorm() # SphereNorm2d(channels)  #
+        self.norm_scale = norm_scale # nn.Parameter(torch.tensor(norm_scale)) #
+        self.alpha = nn.Parameter(torch.tensor(1.)) if short_cut is not None else None
+        self.shortcut = short_cut if short_cut is not None else None
+
+    def forward(self, x):
+        y = self.norm_scale * F.layer_norm(x, x.shape[1:])
+        if self.alpha is not None:
+            y += self.shortcut * self.alpha * x
+        return y # self.norm_scale * y
+
+class ResReLU(nn.Module):
+    def __init__(self, relu_neg_momentum=0., reverse=False):
+        super(ResReLU, self).__init__()
+        self.relu = nn.ReLU()
+        self.relu_neg_momentum = nn.Parameter(torch.tensor(relu_neg_momentum))
+        self.reverse = reverse
+
+    def forward(self, x):
+        return self.relu_neg_momentum * x + (-self.relu(-x) if self.reverse else self.relu(x))
+
+class Flipout(nn.Module):
+    def __init__(self, p=0.25):
+        super(Flipout, self).__init__()
+        assert 0 < p < 0.5, "p should be smaller than 0.5!"
+        self.p = p
+        self.flip_scale = 1. / (1. - 2. * p)
+
+    def forward(self, x):
+        if self.training:
+            x[torch.rand_like(x) < self.p] *= -1
+            return self.flip_scale * x
+        return x
+
+
+class HuberLayerNorm(nn.Module):
+    def __init__(self, layer_dim=None):
+        super(HuberLayerNorm, self).__init__()
+        if layer_dim is None:
+            layer_dim = -1
+        self.layer_dim = layer_dim
+
+    def forward(self, x):
+        x = x - x.mean(self.layer_dim, keepdim=True)
+        x_abs = x.abs()
+        lt1_mask = (x_abs <= 1).data
+        if lt1_mask.all():
+            x_std = ((x ** 2).mean(self.layer_dim, keepdim=True) + 1e-5).sqrt()
+        elif not lt1_mask.any():
+            x_std = x_abs.mean(self.layer_dim, keepdim=True)
+        else:
+            lt1_mask = lt1_mask.type(torch.int)
+            gt1_mask = 1 - lt1_mask
+            lt1_num = lt1_mask.sum()
+            x_std2 = ((lt1_mask * x) ** 2).sum(self.layer_dim, keepdim=True).sqrt() / sqrt(lt1_num)
+            x_std1 = (gt1_mask * x_abs).sum(self.layer_dim, keepdim=True) / (x.numel() - lt1_num)
+            x_std = x_std1 + x_std2
+        return x / x_std
+
+
+def huber_full_norm(x):
+    x = x - x.mean()
+    x_abs = x.abs()
+    lt1_mask = (x_abs < 0.1).data
+    if lt1_mask.all():
+        x_std = ((x ** 2).mean() + 1e-5).sqrt()
+    elif not lt1_mask.any():
+        x_std = x_abs.mean()
+    else:
+        lt1_mask = lt1_mask.type(torch.int)
+        gt1_mask = 1 - lt1_mask
+        lt1_num = lt1_mask.sum()
+        x_std2 = ((lt1_mask * x) ** 2).sum().sqrt() / sqrt(lt1_num)
+        x_std1 = (gt1_mask * x_abs).sum() / (x.numel() - lt1_num)
+        x_std = x_std1 + x_std2
+    return x / x_std
