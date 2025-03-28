@@ -188,22 +188,23 @@ class ReLUSplitNorm(nn.Module):
             centers = torch.quantile(x, torch.linspace(0., 1., self.split_num, device=x.device))
         return centers
 
-    def mean_split(self, x, centers, max_iter=1, center_mode="avg"):
-        y = x.unsqueeze(-1)
-        if center_mode == 'avg':
-            for _ in range(max_iter):
-                avg = torch.mean(torch.diff(y < centers) * y, -1) # list(range(x.dim()))
-                centers[1:-1] = torch.mean(torch.diff(y < avg) * y, -1)
-        elif center_mode == 'median':
-            for _ in range(max_iter):
-                avg = torch.mean(torch.diff(y < centers) * y, -1)
-                centers[1:-1] = torch.median(torch.diff(y < avg) * y, -1)
-        else:
-            for _ in range(max_iter):
-                avg = torch.mean(torch.diff(y < centers) * y, -1)
-                centers[1:-1] = (avg[:-1] + avg[1:]) / 2
-        avg = torch.mean(torch.diff(y < centers) * y, -1)
-        return avg.detach() # z, y - z
+    def mean_split(self, x, centers, max_iter=1, center_mode="any"):
+        with torch.no_grad():
+            y = x.unsqueeze(-1)
+            if center_mode == 'avg':
+                for _ in range(max_iter):
+                    avg = torch.mean(torch.diff(y < centers) * y, 0)  # list(range(x.dim()))
+                    centers[1:-1] = torch.mean(torch.diff(y < avg) * y, 0)
+            elif center_mode == 'median':
+                for _ in range(max_iter):
+                    avg = torch.mean(torch.diff(y < centers) * y, 0)
+                    centers[1:-1] = torch.median(torch.diff(y < avg) * y, 0).values
+            else:
+                for _ in range(max_iter):
+                    avg = torch.mean(torch.diff(y < centers) * y, 0)
+                    centers[1:-1] = (avg[:-1] + avg[1:]) / 2
+            avg = torch.mean(torch.diff(y < centers) * y, 0)
+            return avg # .detach() # z, y - z
 
 
     def forward(self, x):
@@ -214,7 +215,7 @@ class ReLUSplitNorm(nn.Module):
         # avg2 = x_up.sum() / n_up
         # avg0 = (x - x_up).sum() / (x.numel() - n_up)
         centers = self.init_split_centers_1d(x.view(-1))
-        avg0, avg1, avg2 = self.mean_split(x, centers)
+        avg0, avg1, avg2 = self.mean_split(x.view(-1), centers)
         x1 = F.elu(x - avg2) # top_mask * x # (1 - up_mask) * avg0 + (up_mask - top_mask) * avg1 + top_mask * x
         x2 = F.elu(avg2 - avg1 - F.elu(avg2 - x)) # (up_mask - top_mask) * x # (1 - up_mask) * avg0 + (up_mask - top_mask) * x + top_mask * avg1
         x3 = F.elu(avg1 - avg0 - F.elu(avg1 - x)) #(1 - up_mask - bottom_mask) * x # up_mask * avg0 + (1 - up_mask - bottom_mask) * x + bottom_mask * avg2
